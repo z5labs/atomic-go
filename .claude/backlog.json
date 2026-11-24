@@ -1,0 +1,28 @@
+{
+  "select": {
+    "label": "story",
+    "milestone": null,
+    "limit": 200
+  },
+  "dependencies": {
+    "style": "blocked-by"
+  },
+  "verify": [
+    "go build ./...",
+    "go vet ./...",
+    "go test -race ./...",
+    "test -z \"$(gofmt -l .)\""
+  ],
+  "merge": {
+    "label": "auto-merge",
+    "workflow": "auto-merge.yaml"
+  },
+  "review": {
+    "reviewers": ["copilot", "local"],
+    "app": {
+      "idEnv": "Z5LABS_REVIEW_APP_ID",
+      "keyEnv": "Z5LABS_REVIEW_APP_KEY"
+    }
+  },
+  "worktreeDir": ".claude/worktrees"
+}
