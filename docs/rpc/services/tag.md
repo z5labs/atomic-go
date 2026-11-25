@@ -183,7 +183,7 @@ Returns one tag by name, for `atomic tag show <NAME>` [`tag_service.proto#L37`](
 | Field | # | Type | Required | Meaning |
 |---|---|---|---|---|
 | `repository` | 1 | [RepositoryRef](../types.md#repositoryref) | **Required** | The repository; the handler unwraps it without a check [`services_tag.rs#L172`](https://github.com/atomicdotdev/atomic/blob/a6c3e359456e83cf5a967a2e8265f11e0ba45d80/libatomic/src/daemon/services_tag.rs#L172) |
-| `name` | 2 | `string` | **Unconfirmed** | The tag name, passed to the domain lookup as given [`services_tag.rs#L174`](https://github.com/atomicdotdev/atomic/blob/a6c3e359456e83cf5a967a2e8265f11e0ba45d80/libatomic/src/daemon/services_tag.rs#L174) [`services_tag.rs#L177`](https://github.com/atomicdotdev/atomic/blob/a6c3e359456e83cf5a967a2e8265f11e0ba45d80/libatomic/src/daemon/services_tag.rs#L177); libatomic does not check it for emptiness |
+| `name` | 2 | `string` | **Required** | The tag name, passed to the domain lookup as given [`services_tag.rs#L174`](https://github.com/atomicdotdev/atomic/blob/a6c3e359456e83cf5a967a2e8265f11e0ba45d80/libatomic/src/daemon/services_tag.rs#L174) [`services_tag.rs#L177`](https://github.com/atomicdotdev/atomic/blob/a6c3e359456e83cf5a967a2e8265f11e0ba45d80/libatomic/src/daemon/services_tag.rs#L177); libatomic does not check it for emptiness. A name that matches no tag returns a response with no `tag` [`services_tag.rs#L177-L178`](https://github.com/atomicdotdev/atomic/blob/a6c3e359456e83cf5a967a2e8265f11e0ba45d80/libatomic/src/daemon/services_tag.rs#L177-L178) |
 
 **Response**: `GetTagResponse` [`tag_messages.proto#L69-L75`](https://github.com/atomicdotdev/atomic/blob/a6c3e359456e83cf5a967a2e8265f11e0ba45d80/libatomic/proto/atomic/services/tag/tag_messages.proto#L69-L75)
 
