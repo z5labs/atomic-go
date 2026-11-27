@@ -4,6 +4,7 @@ import (
 	"encoding/base32"
 	"encoding/hex"
 	"errors"
+	"math"
 	"math/rand/v2"
 	"strings"
 	"testing"
@@ -169,6 +170,18 @@ func TestDecodeBase32Strict(t *testing.T) {
 	t.Run("refuses a negative length", func(t *testing.T) {
 		_, err := ident.DecodeBase32Strict("", -1)
 		requireParseError(t, err, ident.ErrRange, 0)
+	})
+
+	t.Run("refuses a length too large to encode", func(t *testing.T) {
+		_, err := ident.DecodeBase32Strict(goldenBase32, math.MaxInt)
+		requireParseError(t, err, ident.ErrRange, 0)
+		_, err = ident.DecodeBase32Strict(goldenBase32, math.MaxInt/8+1)
+		requireParseError(t, err, ident.ErrRange, 0)
+	})
+
+	t.Run("a large n with a short input is a length error", func(t *testing.T) {
+		_, err := ident.DecodeBase32Strict(goldenBase32, 1<<40)
+		requireParseError(t, err, ident.ErrLength, ident.Base32Len)
 	})
 
 	t.Run("round-trips every length", func(t *testing.T) {

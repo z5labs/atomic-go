@@ -1,5 +1,7 @@
 package ident
 
+import "math"
+
 const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
 // EncodeBase32 returns the upper-case, unpadded RFC 4648 base32 of b. The
@@ -95,14 +97,16 @@ func decodeBase32Lenient(what, s string) ([Size]byte, error) {
 //   - the last character's unused low bits must be zero.
 //
 // A failure is a *[ParseError] wrapping [ErrSyntax] or [ErrLength], or
-// [ErrRange] when n is negative.
+// [ErrRange] when n is negative or too large to encode.
 func DecodeBase32Strict(s string, n int) ([]byte, error) {
 	const what = "strict base32"
-	if n < 0 {
+	if n < 0 || n > (math.MaxInt-4)/8 {
 		return nil, parseError(what, s, 0, ErrRange)
 	}
 	want := (n*8 + 4) / 5
-	out := make([]byte, 0, n)
+	// Size the buffer by the input, not by n, so a large n with a short
+	// input allocates nothing it will not use.
+	out := make([]byte, 0, min(n, len(s)*5/8))
 	var acc uint16
 	bits := 0
 	for i := 0; i < len(s); i++ {

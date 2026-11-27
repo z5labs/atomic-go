@@ -20,7 +20,8 @@ func Sum(data []byte) Hash {
 	return Hash(blake3.Sum256(data))
 }
 
-// Hasher computes a BLAKE3 [Hash] incrementally.
+// Hasher computes a BLAKE3 [Hash] incrementally. Create one with
+// [NewHasher]; the zero value is not usable.
 type Hasher struct {
 	h *blake3.Hasher
 }
@@ -39,7 +40,7 @@ func (h *Hasher) Write(p []byte) (int, error) {
 // the Hasher's state, so more can be written afterwards.
 func (h *Hasher) Sum() Hash {
 	var out Hash
-	h.h.Sum(out[:0])
+	copy(out[:], h.h.Sum(nil))
 	return out
 }
 
