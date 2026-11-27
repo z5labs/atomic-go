@@ -163,9 +163,14 @@ type InventoryError struct {
 
 // Error returns the message Atomic's client reports for the row, "Invalid
 // view inventory row {line}: {reason}", so a client can report it as the
-// CLI does.
+// CLI does. A nil Err reads as "invalid view inventory row", the reason
+// Atomic gives when it has no other.
 func (e *InventoryError) Error() string {
-	return "Invalid view inventory row " + strconv.Itoa(e.Line) + ": " + e.Err.Error()
+	reason := "invalid view inventory row"
+	if e.Err != nil {
+		reason = e.Err.Error()
+	}
+	return "Invalid view inventory row " + strconv.Itoa(e.Line) + ": " + reason
 }
 
 // Unwrap returns e.Err.
@@ -197,6 +202,10 @@ func ParseInventory(body string) ([]Info, error) {
 // six tab-separated fields, or five when SetID is "". An empty Parent or
 // State is written as '-', so the row always has its state field and
 // [ParseInfoStrict] reads it back as i.
+//
+// Info has no MarshalText on purpose: that would make encoding/json and
+// other text-aware encoders write an Info as one tab-separated string
+// rather than as a struct.
 //
 // It refuses, with an error wrapping [ErrUnwritable], an Info that would not
 // read back as itself: an empty Name or Scope; a field holding a tab, CR,
@@ -243,11 +252,6 @@ func (i Info) AppendText(b []byte) ([]byte, error) {
 		b = append(b, i.SetID...)
 	}
 	return b, nil
-}
-
-// MarshalText returns i as one inventory row; see [Info.AppendText].
-func (i Info) MarshalText() ([]byte, error) {
-	return i.AppendText(nil)
 }
 
 // appendOptional appends f to b, or '-' when f is "".

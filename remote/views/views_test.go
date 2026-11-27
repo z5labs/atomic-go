@@ -103,6 +103,10 @@ func TestParseInfo(t *testing.T) {
 		{"dev\tshared\tmain", views.Info{Name: "dev", Scope: ident.ScopeShared, Parent: "main"}},
 		{"dev\tpublic\t-\t4\t-", views.Info{Name: "dev", Scope: "public", ChangeCount: 4}},
 		{
+			"dev\tshared\t-\t0\t-\tS\textra",
+			views.Info{Name: "dev", Scope: ident.ScopeShared, SetID: "S"},
+		},
+		{
 			"dev\tshared\t-\t3\tS\tID\tseventh\teighth",
 			views.Info{Name: "dev", Scope: ident.ScopeShared, ChangeCount: 3, State: "S", SetID: "ID"},
 		},
@@ -184,6 +188,8 @@ func TestInventoryErrorIs(t *testing.T) {
 	err := error(&views.InventoryError{Line: 2, Err: sentinel})
 	require.ErrorIs(t, err, sentinel)
 	require.EqualError(t, err, "Invalid view inventory row 2: sentinel")
+
+	require.EqualError(t, &views.InventoryError{Line: 1}, "Invalid view inventory row 1: invalid view inventory row")
 }
 
 func TestInfoAppendText(t *testing.T) {
@@ -223,7 +229,7 @@ func TestInfoAppendText(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "prefix:"+tc.want, string(got))
 
-			text, err := tc.info.MarshalText()
+			text, err := tc.info.AppendText(nil)
 			require.NoError(t, err)
 			require.Equal(t, tc.want, string(text))
 
@@ -263,7 +269,7 @@ func TestInfoAppendText(t *testing.T) {
 
 	t.Run("a view named '-' is written", func(t *testing.T) {
 		info := views.Info{Name: "-", Scope: ident.ScopeShared}
-		text, err := info.MarshalText()
+		text, err := info.AppendText(nil)
 		require.NoError(t, err)
 		got, err := views.ParseInfoStrict(string(text))
 		require.NoError(t, err)
