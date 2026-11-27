@@ -3,6 +3,7 @@ package projecttest_test
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/z5labs/atomic-go/remote/remotetest"
 	"github.com/z5labs/atomic-go/remote/syncproto"
 	"github.com/z5labs/atomic-go/remote/views"
+	"github.com/z5labs/atomic-go/zstdframe"
 )
 
 const (
@@ -230,6 +232,109 @@ func TestServer_Push(t *testing.T) {
 		require.Equal(t, http.StatusBadRequest, resp.status)
 	})
 
+	t.Run("a second move of one ref is checked against the first", func(t *testing.T) {
+		srv := projecttest.NewServer()
+		_, a := snapshot("")
+		h, _ := change("f")
+		_, b := snapshot("", h)
+
+		resp := push(t, srv, syncproto.Pack{
+			Objects: []syncproto.ObjectRecord{a, b},
+			Refs: []syncproto.RefRecord{
+				{Name: "dev", NewTarget: a.Key},
+				{Name: "dev", ExpectOld: ptr(a.Key), NewTarget: b.Key},
+			},
+		})
+
+		require.Equal(t, http.StatusOK, resp.status, string(resp.body))
+		require.JSONEq(t, `{"stored":2,"refs_moved":2}`, string(resp.body), "every ref record counts, as in the test peer")
+		target, _ := srv.Ref("dev")
+		require.Equal(t, b.Key, target)
+	})
+
+	t.Run("a second creation of one ref is refused and stores nothing", func(t *testing.T) {
+		srv := projecttest.NewServer()
+		_, a := snapshot("")
+		h, _ := change("g")
+		_, b := snapshot("", h)
+
+		resp := push(t, srv, syncproto.Pack{
+			Objects: []syncproto.ObjectRecord{a, b},
+			Refs: []syncproto.RefRecord{
+				{Name: "dev", NewTarget: a.Key},
+				{Name: "dev", NewTarget: b.Key},
+			},
+		})
+
+		require.Equal(t, http.StatusConflict, resp.status)
+		require.Contains(t, string(resp.body), "ref CAS refused")
+		_, ok := srv.Ref("dev")
+		require.False(t, ok)
+		got, _ := pull(t, srv, syncproto.All(nil))
+		require.Empty(t, got.Objects)
+	})
+
+	t.Run("an object of an unknown family is refused with 400", func(t *testing.T) {
+		srv := projecttest.NewServer()
+		// Encoding refuses an unknown family, so splice one into the
+		// postcard: an object's family is its first byte.
+		_, ch := change("h")
+		raw, err := syncproto.Pack{Objects: []syncproto.ObjectRecord{ch}}.AppendPostcard(nil)
+		require.NoError(t, err)
+		require.Equal(t, byte(1), raw[0], "one object")
+		require.Equal(t, byte(syncproto.Change), raw[1])
+		raw[1] = 99
+		body := zstdframe.Stored{}.Compress(nil, raw)
+
+		resp := do(t, srv, http.MethodPost, codeURL, syncHeader(), body)
+
+		require.Equal(t, http.StatusBadRequest, resp.status)
+		require.Contains(t, string(resp.body), "unknown family")
+		got, _ := pull(t, srv, syncproto.All(nil))
+		require.Empty(t, got.Objects)
+	})
+
+	t.Run("concurrent pushes each move the ref once", func(t *testing.T) {
+		srv := projecttest.NewServer()
+		const n = 8
+		statuses := make(chan int, n)
+		for i := range n {
+			_, view := snapshot(fmt.Sprintf("p%d", i))
+			body, err := syncproto.NewCodec().EncodePack(syncproto.Pack{
+				Objects: []syncproto.ObjectRecord{view},
+				Refs:    []syncproto.RefRecord{{Name: "dev", NewTarget: view.Key}},
+			})
+			require.NoError(t, err)
+			go func() {
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, codeURL, bytes.NewReader(body))
+				if err != nil {
+					statuses <- -1
+					return
+				}
+				req.Header = syncHeader()
+				resp, err := remotetest.Client(srv).Do(req)
+				if err != nil {
+					statuses <- -1
+					return
+				}
+				resp.Body.Close()
+				statuses <- resp.StatusCode
+			}()
+		}
+		var ok, conflict int
+		for range n {
+			switch <-statuses {
+			case http.StatusOK:
+				ok++
+			case http.StatusConflict:
+				conflict++
+			}
+		}
+
+		require.Equal(t, 1, ok, "only the first creation of dev wins")
+		require.Equal(t, n-1, conflict)
+	})
+
 	t.Run("a body that is not a pack is refused with 400", func(t *testing.T) {
 		srv := projecttest.NewServer()
 
@@ -334,6 +439,27 @@ func TestServer_Pull(t *testing.T) {
 		got, _ := pull(t, srv, syncproto.Advertise("dev"))
 
 		require.Equal(t, []syncproto.RefRecord{{Name: "dev", NewTarget: next.Key}}, got.Refs)
+	})
+
+	t.Run("a stored snapshot that does not parse is a 500", func(t *testing.T) {
+		srv := projecttest.NewServer()
+		srv.PutObject(syncproto.ObjectRecord{Family: syncproto.View, Key: "broken", Bytes: []byte("{")})
+		srv.SetRef("dev", "broken")
+		body, err := syncproto.NewCodec().EncodeWants(syncproto.Advertise("dev"))
+		require.NoError(t, err)
+
+		resp := do(t, srv, http.MethodGet, codeURL, syncHeader(), body)
+
+		require.Equal(t, http.StatusInternalServerError, resp.status)
+	})
+
+	t.Run("the chain ends at a snapshot that is not stored", func(t *testing.T) {
+		srv := projecttest.NewServer()
+		srv.SetRef("dev", "absent")
+
+		got, _ := pull(t, srv, syncproto.Advertise("dev"))
+
+		require.Equal(t, []syncproto.RefRecord{{Name: "dev", NewTarget: "absent"}}, got.Refs)
 	})
 
 	t.Run("a body that is not wants is refused with 400", func(t *testing.T) {

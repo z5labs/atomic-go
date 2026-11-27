@@ -22,7 +22,8 @@
 //     says the server checks it.
 //   - Object keys are not checked against their bytes.
 //   - A pull answers with every stored object the client does not have, not
-//     only those the requested views reach.
+//     only those the requested views reach. A have is matched by key alone,
+//     so it drops a stored object of any family under that key.
 //   - An inventory row's change count is the length of the snapshot's
 //     own_changes, which for a draft may or may not include its parent's
 //     changes (docs/remote/endpoints/project.md#viewsnapshot).
@@ -218,9 +219,11 @@ func (s *Server) Requests() []Recorded {
 //   - NewTarget must be the key of a [syncproto.View] object in the pack or
 //     already stored. Otherwise the answer is 400.
 //
-// A refused push stores nothing and moves no ref. An accepted one stores
-// every object, moves every ref, and answers 200 with the JSON
-// {"stored":<objects in the pack>,"refs_moved":<refs in the pack>}.
+// A pack holding an object whose family is not [syncproto.Family.Known] is
+// a 400 too. A refused push stores nothing and moves no ref. An accepted
+// one stores every object, moves every ref, and answers 200 with the JSON
+// {"stored":<objects in the pack>,"refs_moved":<refs in the pack>}, as
+// libatomic's test peer does: a ref moved twice in one pack counts twice.
 //
 // GET {project}/code, with Atomic-Protocol: sync/1 and no query, is a sync
 // pull. Its body is decoded as a [syncproto.Wants], and the answer is 200
@@ -229,8 +232,9 @@ func (s *Server) Requests() []Recorded {
 //   - Its refs are those of the requested views, or of every view, by
 //     name, when Refs is empty. Each view's parent_view chain is followed
 //     through its stored snapshots, and every view on it is answered too,
-//     after the view that named it. A requested view with no ref is left
-//     out. No ref carries an ExpectOld.
+//     after the view that named it. The chain ends at a view whose snapshot
+//     is not stored, and a stored snapshot that does not parse is a 500. A
+//     requested view with no ref is left out. No ref carries an ExpectOld.
 //   - Its objects are every stored object, in the order they were stored,
 //     except those whose key is in Haves, and only the [syncproto.View]
 //     objects when RefsOnly is set.
@@ -301,7 +305,11 @@ func (s *Server) push(w http.ResponseWriter, body []byte) {
 	}
 
 	inPack := make(map[string]bool)
-	for _, o := range p.Objects {
+	for i, o := range p.Objects {
+		if !o.Family.Known() {
+			writeText(w, http.StatusBadRequest, fmt.Sprintf("objects[%d] has unknown family %d", i, uint32(o.Family)))
+			return
+		}
 		if o.Family == syncproto.View {
 			inPack[o.Key] = true
 		}
@@ -382,8 +390,12 @@ func (s *Server) pull(w http.ResponseWriter, body []byte) {
 			}
 			answered[name] = true
 			p.Refs = append(p.Refs, syncproto.RefRecord{Name: name, NewTarget: target})
-			snap, err := s.snapshot(target)
+			snap, stored, err := s.snapshot(target)
 			if err != nil {
+				writeText(w, http.StatusInternalServerError, fmt.Sprintf("view %q: %v", name, err))
+				return
+			}
+			if !stored {
 				break
 			}
 			name = snap.ParentView
@@ -422,13 +434,15 @@ func (s *Server) viewNames() []string {
 	return names
 }
 
-// snapshot parses the stored view snapshot keyed target. s.mu must be held.
-func (s *Server) snapshot(target string) (views.Snapshot, error) {
+// snapshot parses the stored view snapshot keyed target. stored is false,
+// with no error, when there is none. s.mu must be held.
+func (s *Server) snapshot(target string) (snap views.Snapshot, stored bool, err error) {
 	b, ok := s.objects[objectID{family: syncproto.View, key: target}]
 	if !ok {
-		return views.Snapshot{}, fmt.Errorf("view snapshot %q is not stored", target)
+		return views.Snapshot{}, false, nil
 	}
-	return views.ParseSnapshot(b)
+	snap, err = views.ParseSnapshot(b)
+	return snap, true, err
 }
 
 // fetchIdentity answers a project identity read. s.mu must be held.
@@ -494,7 +508,10 @@ func sameDocument(a, b []byte) bool {
 func (s *Server) listViewRefs(w http.ResponseWriter) {
 	var b []byte
 	for _, name := range s.viewNames() {
-		snap, err := s.snapshot(s.refs[name])
+		snap, stored, err := s.snapshot(s.refs[name])
+		if err == nil && !stored {
+			err = fmt.Errorf("view snapshot %q is not stored", s.refs[name])
+		}
 		if err != nil {
 			writeText(w, http.StatusInternalServerError, fmt.Sprintf("view %q: %v", name, err))
 			return
