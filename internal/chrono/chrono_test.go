@@ -61,6 +61,8 @@ func TestParse(t *testing.T) {
 		{"Z", "2023-11-14T22:13:20Z", time.Unix(1700000000, 0).UTC()},
 		{"6 digits", "2026-11-12T16:23:20.451350Z", time.Date(2026, 11, 12, 16, 23, 20, 451_350_000, time.UTC)},
 		{"fraction with an offset", "2026-11-24T11:30:00.5+02:00", time.Date(2026, 11, 24, 9, 30, 0, 500_000_000, time.UTC)},
+		{"largest offset", "2026-11-24T23:59:00+23:59", time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)},
+		{"smallest offset", "2026-11-24T00:00:00-23:59", time.Date(2026, 11, 24, 23, 59, 0, 0, time.UTC)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := chrono.Parse(tc.in)
@@ -91,26 +93,33 @@ func TestParseFractionLengths(t *testing.T) {
 
 func TestParseErrors(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		in       string
-		fraction bool
+		name string
+		in   string
+		is   error
 	}{
-		{"10 fraction digits", "2026-11-12T16:23:20.1234567890Z", true},
-		{"empty fraction", "2026-11-12T16:23:20.Z", true},
-		{"no zone", "2026-11-12T16:23:20", false},
-		{"date only", "2026-11-12", false},
-		{"empty", "", false},
-		{"space separator", "2026-11-12 16:23:20Z", false},
-		{"month out of range", "2026-13-12T16:23:20Z", false},
+		{"10 fraction digits", "2026-11-12T16:23:20.1234567890Z", chrono.ErrFraction},
+		{"empty fraction", "2026-11-12T16:23:20.Z", chrono.ErrFraction},
+		{"comma decimal mark", "2026-11-12T16:23:20,5Z", chrono.ErrZone},
+		{"comma decimal mark with 10 digits", "2026-11-12T16:23:20,1234567890Z", chrono.ErrZone},
+		{"offset hour 24", "2026-11-12T16:23:20.5+24:00", chrono.ErrZone},
+		{"offset minute 60", "2026-11-12T16:23:20+23:60", chrono.ErrZone},
+		{"offset without colon", "2026-11-12T16:23:20+0200", chrono.ErrZone},
+		{"lower-case z", "2026-11-12T16:23:20z", chrono.ErrZone},
+		{"no zone", "2026-11-12T16:23:20", chrono.ErrZone},
+		{"date only", "2026-11-12", nil},
+		{"empty", "", nil},
+		{"space separator", "2026-11-12 16:23:20Z", nil},
+		{"month out of range", "2026-13-12T16:23:20Z", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := chrono.Parse(tc.in)
 			require.Error(t, err)
-			if tc.fraction {
-				require.ErrorIs(t, err, chrono.ErrFraction)
-			} else {
-				require.NotErrorIs(t, err, chrono.ErrFraction)
+			if tc.is != nil {
+				require.ErrorIs(t, err, tc.is)
+				return
 			}
+			require.NotErrorIs(t, err, chrono.ErrFraction)
+			require.NotErrorIs(t, err, chrono.ErrZone)
 		})
 	}
 }
@@ -143,14 +152,28 @@ func TestRoundTrip(t *testing.T) {
 		})
 	}
 
-	// Text of every accepted fraction length parses and formats back to the
-	// same instant, in the canonical length for its value.
-	for n := 1; n <= 9; n++ {
-		in := "2026-11-12T16:23:20." + strings.Repeat("7", n) + "Z"
+	// Text of every accepted fraction length parses to the same instant and
+	// formats back in the canonical length for its value.
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{".7", ".700"},
+		{".77", ".770"},
+		{".777", ".777"},
+		{".7777", ".777700"},
+		{".77777", ".777770"},
+		{".777777", ".777777"},
+		{".7777777", ".777777700"},
+		{".77777777", ".777777770"},
+		{".777777777", ".777777777"},
+	} {
+		in := "2026-11-12T16:23:20" + tc.in + "Z"
 		t.Run(in, func(t *testing.T) {
 			parsed, err := chrono.Parse(in)
 			require.NoError(t, err)
-			again, err := chrono.Parse(chrono.Format(parsed))
+			s := chrono.Format(parsed)
+			require.Equal(t, "2026-11-12T16:23:20"+tc.want+"Z", s)
+			again, err := chrono.Parse(s)
 			require.NoError(t, err)
 			require.Equal(t, parsed, again)
 		})
