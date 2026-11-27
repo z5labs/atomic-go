@@ -1,7 +1,8 @@
 // Package ident holds the identifiers Atomic names its objects by: the
 // 32-byte BLAKE3 [Hash] and its base32 and hex text forms, the Merkle fold
 // that gives a view its state, the order-free [SetID] of a view's members,
-// view [Scope]s and [Sequence] numbers.
+// view [Scope]s, [Sequence] numbers, content [Position]s, and the check
+// [ValidateNewViewName] applies to a view name before a view is created.
 //
 // Every package in this module shares these types, so a value parsed in one
 // package never needs converting before another can use it. Everything here
