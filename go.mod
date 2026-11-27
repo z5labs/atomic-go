@@ -3,6 +3,7 @@ module github.com/z5labs/atomic-go
 go 1.27.0
 
 require (
+	github.com/klauspost/compress v1.20.0
 	github.com/stretchr/testify v1.12.1
 	lukechampine.com/blake3 v1.4.1
 )
