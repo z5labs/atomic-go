@@ -39,6 +39,10 @@ func NewReader(r io.Reader, limit int64) (*Reader, error) {
 		zstd.WithDecoderConcurrency(1),
 		zstd.WithDecoderMaxMemory(MaxWindow),
 		zstd.WithDecoderMaxWindow(MaxWindow),
+		// Without this, klauspost decodes a small *bytes.Buffer whole
+		// with DecodeAll, inside NewReader, and caps its output at
+		// MaxWindow rather than streaming it.
+		zstd.WithDecodeBuffersBelow(0),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("zstdframe: new reader: %w", mapErr(err))

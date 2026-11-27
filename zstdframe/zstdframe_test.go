@@ -184,6 +184,12 @@ func TestDecompress(t *testing.T) {
 		require.Error(t, err)
 		require.False(t, errors.Is(err, zstdframe.ErrLimit))
 	})
+	t.Run("frame longer than its declared size", func(t *testing.T) {
+		d := newDecoder(t, zstdframe.AtomicWindow)
+		_, err := d.Decompress(nil, oversizedFrame(t))
+		require.Error(t, err)
+		require.False(t, errors.Is(err, zstdframe.ErrLimit))
+	})
 }
 
 func TestDecompressLimit(t *testing.T) {
@@ -221,11 +227,28 @@ func TestDecompressLimit(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, got, 2*limit)
 	})
+	t.Run("limit does not count dst for a declared content size", func(t *testing.T) {
+		e, err := zstdframe.NewEncoder(zstdframe.DefaultLevel)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, e.Close()) }()
+		src := payload(1600)
+		d := newDecoder(t, limit)
+		got, err := d.Decompress(make([]byte, limit), e.Compress(nil, src))
+		require.NoError(t, err)
+		require.Len(t, got, limit+len(src))
+		require.Equal(t, src, got[limit:])
+	})
 	t.Run("window past MaxWindow", func(t *testing.T) {
 		d := newDecoder(t, 64<<20)
 		_, err := d.Decompress(nil, wideWindowFrame(t))
 		require.ErrorIs(t, err, zstdframe.ErrLimit)
 	})
+}
+
+// oversizedFrame is a single-segment frame whose header declares 2 bytes of
+// content and whose one raw block holds 5.
+func oversizedFrame(t *testing.T) []byte {
+	return mustHex(t, "28 b5 2f fd 20 02 29 00 00 68 65 6c 6c 6f")
 }
 
 // wideWindowFrame is an empty frame whose window descriptor 0x70 asks for a
@@ -354,6 +377,32 @@ func TestReader(t *testing.T) {
 	t.Run("window past MaxWindow", func(t *testing.T) {
 		_, err := readAll(t, wideWindowFrame(t), 1<<30)
 		require.ErrorIs(t, err, zstdframe.ErrLimit)
+	})
+	t.Run("frame longer than its declared size", func(t *testing.T) {
+		_, err := readAll(t, oversizedFrame(t), 1<<20)
+		require.Error(t, err)
+		require.False(t, errors.Is(err, zstdframe.ErrLimit))
+	})
+	t.Run("bytes.Buffer source streams past MaxWindow", func(t *testing.T) {
+		e, err := zstdframe.NewEncoder(zstdframe.DefaultLevel)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, e.Close()) }()
+		src := make([]byte, zstdframe.MaxWindow+zstdframe.MaxRawBlock)
+		frame := e.Compress(nil, src)
+
+		r, err := zstdframe.NewReader(bytes.NewBuffer(frame), int64(len(src)))
+		require.NoError(t, err)
+		defer func() { require.NoError(t, r.Close()) }()
+		got, err := io.ReadAll(r)
+		require.NoError(t, err)
+		require.Equal(t, len(src), len(got))
+
+		r2, err := zstdframe.NewReader(bytes.NewBuffer(frame), 16)
+		require.NoError(t, err)
+		defer func() { require.NoError(t, r2.Close()) }()
+		got, err = io.ReadAll(r2)
+		require.ErrorIs(t, err, zstdframe.ErrLimit)
+		require.Len(t, got, 16)
 	})
 	t.Run("corrupt input", func(t *testing.T) {
 		_, err := readAll(t, []byte("not zstd at all"), 1<<20)

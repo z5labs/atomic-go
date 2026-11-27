@@ -43,16 +43,21 @@ const (
 
 // ErrLimit reports output that would pass a decoder's limit, or a frame
 // whose window or declared size the decoder will not hold.
+//
+// klauspost reports a frame whose window passes [MaxWindow] and a block too
+// large for its frame's window with the same error, so ErrLimit can also
+// mean that a block is corrupt. Raising a limit never makes either decode.
 var ErrLimit = errors.New("zstdframe: decoded output exceeds limit")
 
-// mapErr reports klauspost's window and size errors as wrapping
+// mapErr reports klauspost's window and size-limit errors as wrapping
 // [ErrLimit], keeping the original in the chain, and returns every other
-// error unchanged.
+// error unchanged. zstd.ErrFrameSizeExceeded is not among them: it means a
+// frame held more than its own header declared, which is corrupt input, not
+// a limit.
 func mapErr(err error) error {
 	switch {
 	case errors.Is(err, zstd.ErrWindowSizeExceeded),
-		errors.Is(err, zstd.ErrDecoderSizeExceeded),
-		errors.Is(err, zstd.ErrFrameSizeExceeded):
+		errors.Is(err, zstd.ErrDecoderSizeExceeded):
 		return fmt.Errorf("%w: %w", ErrLimit, err)
 	default:
 		return err

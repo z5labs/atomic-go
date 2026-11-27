@@ -43,11 +43,20 @@ func NewDecoder(maxOutput int) (*Decoder, error) {
 // [ErrLimit]. The limit counts only what this call appends, not what dst
 // already holds. On any error dst is returned with nothing appended.
 func (d *Decoder) Decompress(dst, src []byte) ([]byte, error) {
-	out, err := d.d.DecodeAll(src, dst)
+	if len(dst) == 0 {
+		out, err := d.d.DecodeAll(src, dst)
+		if err != nil {
+			return dst, fmt.Errorf("zstdframe: decompress: %w", mapErr(err))
+		}
+		return out, nil
+	}
+	// klauspost counts what dst already holds against the limit of a frame
+	// that declares its content size, so decode on its own and append.
+	out, err := d.d.DecodeAll(src, nil)
 	if err != nil {
 		return dst, fmt.Errorf("zstdframe: decompress: %w", mapErr(err))
 	}
-	return out, nil
+	return append(dst, out...), nil
 }
 
 // Close releases the Decoder's state. A Decoder must not be used after
