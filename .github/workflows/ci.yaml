@@ -1,0 +1,47 @@
+name: CI
+
+# Runs the repository's verify list on every pull request and on every push to
+# `main`, so a change with a failing build, vet, race test or gofmt check cannot
+# merge once branch protection requires the `verify` check.
+#
+# The same list lives in other places: the "Before you push" section of
+# CLAUDE.md, the same section of .github/copilot-instructions.md, and the
+# `verify` list in .claude/backlog.json, which the backlog loop runs before it
+# opens a pull request. When you change one, change the others, in the same
+# order.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      # `gofmt -l` lists every file it would rewrite; print them before the
+      # check so a failure says which files to format.
+      - name: gofmt
+        run: |
+          gofmt -l .
+          test -z "$(gofmt -l .)"
