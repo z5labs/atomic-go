@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/z5labs/atomic-go/ident"
@@ -49,7 +50,11 @@ const copyBufferSize = 32 << 10
 // Content-Encoding that inflates past the maximum pack size is a
 // [remote.KindProtocol].
 func (c *Client) DownloadChange(ctx context.Context, h ident.Hash) ([]byte, error) {
-	resp, err := c.requestChange(ctx, opDownloadChange, h)
+	u, err := c.changeURL(opDownloadChange, h)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.requestChange(ctx, opDownloadChange, u, h)
 	if err != nil {
 		return nil, err
 	}
@@ -90,19 +95,24 @@ func (c *Client) DownloadChange(ctx context.Context, h ident.Hash) ([]byte, erro
 // [errors.Is] and [errors.As] reach it. A failure part way through, of
 // either kind, returns the bytes already written to w, which then holds an
 // incomplete change. A nil w fails with a [remote.KindOther] before
-// anything is sent.
+// anything is sent; a typed nil, such as a nil *bytes.Buffer, is not nil
+// and panics on the first write, as it would in [io.Copy].
 func (c *Client) DownloadChangeTo(ctx context.Context, h ident.Hash, w io.Writer) (int64, error) {
+	u, err := c.changeURL(opDownloadChangeToFile, h)
+	if err != nil {
+		return 0, err
+	}
 	if w == nil {
 		return 0, &remote.Error{
 			Kind:    remote.KindOther,
 			Op:      opDownloadChangeToFile,
 			Method:  http.MethodGet,
-			URL:     c.url.String(),
+			URL:     u.String(),
 			Message: "project: DownloadChangeTo: nil io.Writer",
 		}
 	}
 
-	resp, err := c.requestChange(ctx, opDownloadChangeToFile, h)
+	resp, err := c.requestChange(ctx, opDownloadChangeToFile, u, h)
 	if err != nil {
 		return 0, err
 	}
@@ -115,13 +125,10 @@ func (c *Client) DownloadChangeTo(ctx context.Context, h ident.Hash, w io.Writer
 	return n, nil
 }
 
-// requestChange sends the download_change request for h and returns a 200
-// response; any other status is returned as its error, the body already
-// closed.
-func (c *Client) requestChange(ctx context.Context, op string, h ident.Hash) (*wire.Response, error) {
-	subject := h.String()
+// changeURL returns the download_change request URL for h.
+func (c *Client) changeURL(op string, h ident.Hash) (*url.URL, error) {
 	var q wire.Query
-	if err := q.Add("change", subject); err != nil {
+	if err := q.Add("change", h.String()); err != nil {
 		// A hash's base32 text holds nothing a query refuses.
 		return nil, &remote.Error{
 			Kind:    remote.KindOther,
@@ -132,11 +139,17 @@ func (c *Client) requestChange(ctx context.Context, op string, h ident.Hash) (*w
 			Err:     err,
 		}
 	}
+	return c.url.WithRawQuery(q.String()), nil
+}
 
+// requestChange sends the download_change request for h to u and returns a
+// 200 response; any other status is returned as its error, the body
+// already closed.
+func (c *Client) requestChange(ctx context.Context, op string, u *url.URL, h ident.Hash) (*wire.Response, error) {
 	resp, err := c.requester.Do(ctx, wire.Request{
 		Op:     op,
 		Method: http.MethodGet,
-		URL:    c.url.WithRawQuery(q.String()),
+		URL:    u,
 	})
 	if err != nil {
 		return nil, err
@@ -153,7 +166,7 @@ func (c *Client) requestChange(ctx context.Context, op string, h ident.Hash) (*w
 			Method:           http.MethodGet,
 			URL:              resp.URL,
 			StatusCode:       resp.StatusCode,
-			Subject:          subject,
+			Subject:          h.String(),
 			ServerMinVersion: resp.MinVersion,
 		}
 	default:

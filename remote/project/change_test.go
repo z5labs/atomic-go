@@ -3,7 +3,6 @@ package project_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -30,11 +29,12 @@ func changeHash(t *testing.T) ident.Hash {
 }
 
 // download is one of the two change downloads, normalised to return the
-// bytes it fetched.
+// bytes it fetched and the count it reported: len of the bytes for
+// DownloadChange, the returned count for DownloadChangeTo.
 type download struct {
 	name string
 	op   string
-	get  func(context.Context, *project.Client, ident.Hash) ([]byte, error)
+	get  func(*testing.T, *project.Client, ident.Hash) ([]byte, int64, error)
 }
 
 func downloads() []download {
@@ -42,23 +42,19 @@ func downloads() []download {
 		{
 			name: "DownloadChange",
 			op:   "download_change",
-			get: func(ctx context.Context, c *project.Client, h ident.Hash) ([]byte, error) {
-				return c.DownloadChange(ctx, h)
+			get: func(_ *testing.T, c *project.Client, h ident.Hash) ([]byte, int64, error) {
+				b, err := c.DownloadChange(context.Background(), h)
+				return b, int64(len(b)), err
 			},
 		},
 		{
 			name: "DownloadChangeTo",
 			op:   "download_change_to_file",
-			get: func(ctx context.Context, c *project.Client, h ident.Hash) ([]byte, error) {
+			get: func(t *testing.T, c *project.Client, h ident.Hash) ([]byte, int64, error) {
 				var buf bytes.Buffer
-				n, err := c.DownloadChangeTo(ctx, h, &buf)
-				if err != nil {
-					return nil, err
-				}
-				if n != int64(buf.Len()) {
-					return nil, errors.New("DownloadChangeTo returned a count unlike the bytes it wrote")
-				}
-				return buf.Bytes(), nil
+				n, err := c.DownloadChangeTo(context.Background(), h, &buf)
+				require.Equal(t, int64(buf.Len()), n)
+				return buf.Bytes(), n, err
 			},
 		},
 	}
@@ -71,9 +67,10 @@ func TestDownloadChangeRequest(t *testing.T) {
 			var got seen
 			c, _ := newClient(t, recordingHandler(&got, respond(http.StatusOK, change, "Content-Type", "application/octet-stream")))
 
-			b, err := d.get(context.Background(), c, changeHash(t))
+			b, n, err := d.get(t, c, changeHash(t))
 			require.NoError(t, err)
 			require.Equal(t, change, b)
+			require.Equal(t, int64(len(change)), n)
 
 			require.Equal(t, 1, got.calls)
 			require.Equal(t, http.MethodGet, got.method)
@@ -110,9 +107,10 @@ func TestDownloadChangeDecodesZstd(t *testing.T) {
 		t.Run(d.name, func(t *testing.T) {
 			c, _ := newClient(t, recordingHandler(new(seen), respond(http.StatusOK, body, "Content-Encoding", "zstd")))
 
-			b, err := d.get(context.Background(), c, changeHash(t))
+			b, n, err := d.get(t, c, changeHash(t))
 			require.NoError(t, err)
 			require.Equal(t, change, b)
+			require.Equal(t, int64(len(change)), n)
 		})
 	}
 }
@@ -122,8 +120,9 @@ func TestDownloadChangeNotFound(t *testing.T) {
 		t.Run(d.name, func(t *testing.T) {
 			c, _ := newClient(t, recordingHandler(new(seen), respond(http.StatusNotFound, []byte("nope"), remote.MinVersionHeader, "0.1.0")))
 
-			b, err := d.get(context.Background(), c, changeHash(t))
-			require.Nil(t, b)
+			b, n, err := d.get(t, c, changeHash(t))
+			require.Empty(t, b)
+			require.Zero(t, n)
 			re := requireRemoteError(t, err, remote.KindChangeNotFound)
 			require.ErrorIs(t, err, remote.ErrNotFound)
 			require.Equal(t, changeHashText, re.Subject)
@@ -155,8 +154,9 @@ func TestDownloadChangeStatuses(t *testing.T) {
 			t.Run(d.name+"/"+http.StatusText(tc.status), func(t *testing.T) {
 				c, _ := newClient(t, recordingHandler(new(seen), respond(tc.status, []byte("nope"), remote.MinVersionHeader, "0.1.0")))
 
-				b, err := d.get(context.Background(), c, changeHash(t))
-				require.Nil(t, b)
+				b, n, err := d.get(t, c, changeHash(t))
+				require.Empty(t, b)
+				require.Zero(t, n)
 				re := requireRemoteError(t, err, tc.kind)
 				require.Equal(t, d.op, re.Op)
 				require.Equal(t, http.MethodGet, re.Method)
@@ -229,7 +229,8 @@ func TestDownloadChangeToNilWriterSendsNothing(t *testing.T) {
 	c, _ := newClient(t, recordingHandler(&got, respond(http.StatusOK, nil)))
 
 	n, err := c.DownloadChangeTo(context.Background(), changeHash(t), nil)
-	requireRemoteError(t, err, remote.KindOther)
+	re := requireRemoteError(t, err, remote.KindOther)
+	require.Equal(t, "https://acme.example.com"+changeURI, re.URL)
 	require.Zero(t, n)
 	require.Zero(t, got.calls)
 }
@@ -240,8 +241,7 @@ func TestDownloadChangeReadFailure(t *testing.T) {
 			body := &trackingBody{r: strings.NewReader("ATOMIC"), err: errSentinel}
 			c, _ := newClientWithDoer(t, bodyDoer(http.StatusOK, body))
 
-			b, err := d.get(context.Background(), c, changeHash(t))
-			require.Nil(t, b)
+			_, _, err := d.get(t, c, changeHash(t))
 			re := requireRemoteError(t, err, remote.KindConnectionFailed)
 			require.ErrorIs(t, err, errSentinel)
 			require.Equal(t, d.op, re.Op)
@@ -250,6 +250,15 @@ func TestDownloadChangeReadFailure(t *testing.T) {
 			require.True(t, body.closed)
 		})
 	}
+}
+
+func TestDownloadChangeReadFailureReturnsNoBytes(t *testing.T) {
+	body := &trackingBody{r: strings.NewReader("ATOMIC"), err: errSentinel}
+	c, _ := newClientWithDoer(t, bodyDoer(http.StatusOK, body))
+
+	b, err := c.DownloadChange(context.Background(), changeHash(t))
+	requireRemoteError(t, err, remote.KindConnectionFailed)
+	require.Nil(t, b)
 }
 
 func TestDownloadChangeToReadFailureKeepsTheCount(t *testing.T) {
@@ -285,7 +294,9 @@ func TestDownloadChangeConnectionFailure(t *testing.T) {
 		t.Run(d.name, func(t *testing.T) {
 			c, _ := newClientWithDoer(t, &http.Client{Transport: roundTripError(errSentinel)})
 
-			_, err := d.get(context.Background(), c, changeHash(t))
+			b, n, err := d.get(t, c, changeHash(t))
+			require.Empty(t, b)
+			require.Zero(t, n)
 			re := requireRemoteError(t, err, remote.KindConnectionFailed)
 			require.ErrorIs(t, err, errSentinel)
 			require.Equal(t, d.op, re.Op)
@@ -329,7 +340,7 @@ func TestDownloadChangePastTheLimitInAContentEncoding(t *testing.T) {
 		t.Run(d.name, func(t *testing.T) {
 			c, _ := newClient(t, recordingHandler(new(seen), respond(http.StatusOK, body, "Content-Encoding", "zstd")), project.WithMaxPackSize(1024))
 
-			_, err := d.get(context.Background(), c, changeHash(t))
+			_, _, err := d.get(t, c, changeHash(t))
 			re := requireRemoteError(t, err, remote.KindProtocol)
 			require.ErrorIs(t, err, zstdframe.ErrLimit)
 			require.False(t, re.Retryable())
