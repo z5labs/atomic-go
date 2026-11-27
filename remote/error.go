@@ -240,6 +240,11 @@ func (e *Error) Unwrap() error {
 // Is reports whether e matches target: [ErrUnauthorized], [ErrForbidden] and
 // [ErrConflict] by status alone, whatever the Kind, and [ErrNotFound] for a
 // 404 or any not-found Kind. Any other target is left to the cause.
+//
+// The status-only sentinels are narrower than [Error.IsAuth]: a
+// [KindAuthenticationFailed] without a status matches neither
+// ErrUnauthorized nor ErrForbidden, so use IsAuth for "is this an
+// authentication failure at all".
 func (e *Error) Is(target error) bool {
 	switch target {
 	case ErrUnauthorized:
@@ -267,7 +272,8 @@ func (e *Error) Retryable() bool {
 }
 
 // IsAuth reports whether e is an authentication or authorisation failure:
-// a [KindAuthenticationFailed], or a status of 401 or 403.
+// a [KindAuthenticationFailed], whatever its status, or a status of 401 or
+// 403 on any Kind.
 func (e *Error) IsAuth() bool {
 	return e.Kind == KindAuthenticationFailed ||
 		e.StatusCode == http.StatusUnauthorized ||
