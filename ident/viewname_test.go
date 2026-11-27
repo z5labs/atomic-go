@@ -10,9 +10,9 @@ import (
 )
 
 func TestValidateNewViewName(t *testing.T) {
-	// One accepted and one refused name per rule. The source column names
-	// the front end the rule comes from; "client" rules are this package's
-	// own additions.
+	// One accepted and one refused name per rule. The parenthesised suffix
+	// names the front end the rule comes from; "client" rules are this
+	// package's own additions.
 	for _, tc := range []struct {
 		rule     string
 		accepted string
@@ -20,7 +20,7 @@ func TestValidateNewViewName(t *testing.T) {
 	}{
 		{"empty (CLI, daemon)", "a", ""},
 		{"daemon maximum of 100 bytes", strings.Repeat("a", 100), strings.Repeat("a", 101)},
-		{"CLI maximum of 255 bytes", strings.Repeat("a", 100), strings.Repeat("a", 256)},
+		{"CLI maximum of 255 bytes, subsumed by the daemon's 100", strings.Repeat("a", 100), strings.Repeat("a", 256)},
 		{"multi-byte length is counted in bytes", strings.Repeat("é", 50), strings.Repeat("é", 51)},
 		{"'/' (CLI, daemon)", "feature-x", "feature/x"},
 		{"'\\' (CLI, daemon)", "feature-x", `feature\x`},

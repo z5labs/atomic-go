@@ -1,6 +1,7 @@
 package ident
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 )
@@ -44,7 +45,8 @@ func ParsePosition(s string) (Position, error) {
 	if err != nil {
 		// The change part starts at offset 0, so the offset already counts
 		// from the start of s; only the input needs widening.
-		if pe, ok := err.(*ParseError); ok {
+		var pe *ParseError
+		if errors.As(err, &pe) {
 			pe.Input = s
 		}
 		return Position{}, err
