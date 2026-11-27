@@ -1,6 +1,8 @@
-// Package views reads and writes the rows of a remote's view inventory: one
-// line per view, holding its name, scope, parent, change count, Merkle state
-// and SetId, separated by tabs.
+// Package views reads and writes the forms a view travels in: the rows of a
+// remote's view inventory, view manifests and view snapshots.
+//
+// An inventory row is one line per view, holding its name, scope, parent,
+// change count, Merkle state and SetId, separated by tabs.
 //
 // Two requests return these rows, and Atomic parses them with different
 // strictness. GET {project}/refs/views is read with [ParseInventory], which
@@ -12,6 +14,15 @@
 // The format is documented in docs/remote/types.md, under RemoteViewInfo,
 // and the two requests in docs/remote/endpoints/project.md, under
 // list_view_refs and list_views.
+//
+// The package also holds the two other forms a view travels in. A
+// [Manifest] is the text a view's name, scope, parent, Merkle state and
+// change log are written as, read with [ParseManifest] and checked with
+// [Manifest.Verify]. A [Snapshot] is the JSON object a push carries for each
+// view, minted from a manifest with [FromManifest] and keyed by the hex
+// BLAKE3 of its [Snapshot.MarshalCanonical] bytes, which match the bytes
+// Atomic writes. Both are documented in docs/remote/endpoints/project.md,
+// under ViewManifest and ViewSnapshot.
 package views
 
 import (
