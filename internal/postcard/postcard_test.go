@@ -428,6 +428,56 @@ func TestReaderLimits(t *testing.T) {
 		}
 	})
 
+	t.Run("a declared length within the limit that the stream does not back", func(t *testing.T) {
+		// 1 GiB is within maxLen, but the stream holds three bytes. The
+		// Reader must not allocate the declared length before reading.
+		in := encode(func(e *postcard.Encoder) { e.U64(1 << 30) })
+		in = append(in, "abc"...)
+		for name, read := range map[string]func(*testing.T, *postcard.Reader){
+			"ByteSeq": func(t *testing.T, r *postcard.Reader) { require.Nil(t, r.ByteSeq()) },
+			"Str":     func(t *testing.T, r *postcard.Reader) { require.Empty(t, r.Str()) },
+		} {
+			t.Run(name, func(t *testing.T) {
+				var before, after runtime.MemStats
+				runtime.ReadMemStats(&before)
+				r := postcard.NewReader(bytes.NewReader(in), 1<<31-1)
+				read(t, r)
+				runtime.ReadMemStats(&after)
+				requireError(t, r.Err(), postcard.ErrUnexpectedEnd, 0)
+				require.ErrorIs(t, r.Err(), io.ErrUnexpectedEOF)
+				require.Equal(t, int64(len(in)), r.Offset())
+				require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(1<<20))
+			})
+		}
+	})
+
+	t.Run("a length past the first allocation step is read whole", func(t *testing.T) {
+		for _, n := range []int{64<<10 - 1, 64 << 10, 64<<10 + 1, 1<<20 + 7} {
+			want := bytes.Repeat([]byte{0x5a}, n)
+			in := encode(func(e *postcard.Encoder) { e.ByteSeq(want); e.U8(0x2a) })
+			r := postcard.NewReader(iotest.OneByteReader(bytes.NewReader(in)), n)
+			got := r.ByteSeq()
+			require.NoError(t, r.Err(), "n=%d", n)
+			require.Equal(t, want, got, "n=%d", n)
+			require.Equal(t, uint32(0x2a), r.U32(), "n=%d", n)
+		}
+	})
+
+	t.Run("input that ends inside a long value", func(t *testing.T) {
+		const n = 1 << 20
+		in := encode(func(e *postcard.Encoder) { e.ByteSeq(make([]byte, n)) })
+		header := len(in) - n
+		// Short by one byte, and ending exactly where the first
+		// allocation step does.
+		for _, end := range []int{len(in) - 1, header + 64<<10} {
+			r := postcard.NewReader(bytes.NewReader(in[:end]), n)
+			require.Nil(t, r.ByteSeq())
+			requireError(t, r.Err(), postcard.ErrUnexpectedEnd, 0)
+			require.ErrorIs(t, r.Err(), io.ErrUnexpectedEOF)
+			require.Equal(t, int64(end), r.Offset())
+		}
+	})
+
 	t.Run("a length at the limit is read", func(t *testing.T) {
 		b := encode(func(e *postcard.Encoder) { e.ByteSeq([]byte("abcd")) })
 		r := postcard.NewReader(bytes.NewReader(b), 4)

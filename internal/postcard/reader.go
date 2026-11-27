@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"unicode/utf8"
 )
 
@@ -24,7 +25,10 @@ type byteReader interface {
 // [ErrUnexpectedEnd].
 //
 // Every length and count is checked against the limit given to
-// [NewReader] before anything is allocated for it.
+// [NewReader] before anything is allocated for it. A byte sequence or
+// string within the limit is not allocated whole up front either: its
+// buffer grows as the stream delivers bytes, so a length the stream does
+// not back costs only what the stream actually holds.
 type Reader struct {
 	src    byteReader
 	maxLen int
@@ -200,14 +204,38 @@ func (r *Reader) byteSeq() ([]byte, int64) {
 	if !ok {
 		return nil, start
 	}
-	b := make([]byte, n)
-	m, err := io.ReadFull(r.src, b)
-	r.off += int64(m)
+	b, err := r.readN(n)
 	if err != nil {
 		r.failAt(start, readError(err))
 		return nil, start
 	}
 	return b, start
+}
+
+// readStep is the most a Reader allocates for a byte sequence before the
+// stream has delivered any of it.
+const readStep = 64 << 10
+
+// readN reads exactly n bytes into a new slice. Above readStep, the slice
+// grows, at most doubling, as the bytes arrive, so a declared length the
+// stream does not back cannot make the Reader allocate it.
+func (r *Reader) readN(n int) ([]byte, error) {
+	b := make([]byte, 0, min(n, readStep))
+	for len(b) < n {
+		if len(b) == cap(b) {
+			b = slices.Grow(b, min(cap(b), n-len(b)))
+		}
+		m, err := io.ReadFull(r.src, b[len(b):min(cap(b), n)])
+		b = b[:len(b)+m]
+		r.off += int64(m)
+		if err != nil {
+			if err == io.EOF && len(b) > 0 {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+	}
+	return b, nil
 }
 
 // Str decodes a string; see [Decoder.Str]. A length above the Reader's
