@@ -156,9 +156,39 @@ func TestFetchProjectIdentityReadFailure(t *testing.T) {
 	c, _ := newClientWithDoer(t, bodyDoer(http.StatusOK, body))
 
 	_, err := c.FetchProjectIdentity(context.Background())
-	requireRemoteError(t, err, remote.KindProtocol)
+	re := requireRemoteError(t, err, remote.KindConnectionFailed)
 	require.ErrorIs(t, err, errSentinel)
+	require.False(t, re.ContextDone)
+	require.True(t, re.Retryable())
 	require.True(t, body.closed)
+}
+
+func TestFetchProjectIdentityReadFailureAfterTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	body := &trackingBody{r: strings.NewReader(`{"bound":`), err: context.Canceled}
+	c, _ := newClientWithDoer(t, doerFunc(func(req *http.Request) (*http.Response, error) {
+		cancel()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: body, Request: req}, nil
+	}))
+
+	_, err := c.FetchProjectIdentity(ctx)
+	re := requireRemoteError(t, err, remote.KindConnectionFailed)
+	require.True(t, re.ContextDone)
+	require.False(t, re.Retryable())
+}
+
+func TestBindProjectIdentityConflictWarnsOncePerResponse(t *testing.T) {
+	var got []exchange
+	c, logs := newClient(t, sequenceHandler(&got,
+		respond(http.StatusConflict, []byte(`{"code": "IDENTITY_CONFLICT"}`), remote.MinVersionHeader, "9.0.0"),
+		respond(http.StatusOK, []byte(`{"bound": false}`), remote.MinVersionHeader, "9.0.0"),
+	))
+
+	res, err := c.BindProjectIdentity(context.Background(), []byte(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, project.BindConflict, res.Outcome)
+	require.Len(t, got, 2)
+	require.Len(t, minVersionWarnings(logs), 2)
 }
 
 func TestFetchProjectIdentityStatuses(t *testing.T) {

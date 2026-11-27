@@ -146,7 +146,9 @@ type BindResult struct {
 // project-identity response: …": one that is not JSON, not an object, or
 // larger than 1 MiB, or whose "bound" is not a boolean or "identity" not
 // an object, or which repeats either member. A body that cannot be read is
-// a KindProtocol too, as in the Rust client.
+// a [remote.KindConnectionFailed], as it is for every other request here;
+// the Rust client reports it as a ProtocolError, which would make a
+// cancelled or timed-out read look like a server fault.
 //
 // 404, 405 and 501 are [IdentityUnsupported] and no error. 401 and 403 are
 // [remote.KindAuthenticationFailed] and any other status is a
@@ -172,11 +174,22 @@ func (c *Client) FetchProjectIdentity(ctx context.Context) (RemoteIdentity, erro
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxIdentityBody+1))
-	if err == nil && len(body) > maxIdentityBody {
-		err = fmt.Errorf("body is larger than %d bytes", maxIdentityBody)
+	if err != nil {
+		return RemoteIdentity{}, &remote.Error{
+			Kind:             remote.KindConnectionFailed,
+			Op:               opFetchProjectIdentity,
+			Method:           http.MethodGet,
+			URL:              resp.URL,
+			StatusCode:       resp.StatusCode,
+			ServerMinVersion: resp.MinVersion,
+			ContextDone:      ctx.Err() != nil,
+			Err:              err,
+		}
 	}
 	var id RemoteIdentity
-	if err == nil {
+	if len(body) > maxIdentityBody {
+		err = fmt.Errorf("body is larger than %d bytes", maxIdentityBody)
+	} else {
 		id, err = parseIdentityResponse(body)
 	}
 	if err != nil {
@@ -317,7 +330,8 @@ func jsonType(raw []byte) string {
 // and the failure is logged at Debug level.
 //
 // Unlike the Rust client, a newer [remote.MinVersionHeader] is logged as a
-// warning here too.
+// warning here too, once for each response: a 409 and its follow-up read
+// can log it twice.
 func (c *Client) BindProjectIdentity(ctx context.Context, doc json.RawMessage) (BindResult, error) {
 	if err := json.Unmarshal(doc, new(json.RawMessage)); err != nil {
 		return BindResult{}, &remote.Error{
