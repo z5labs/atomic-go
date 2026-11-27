@@ -20,6 +20,9 @@ test -z "$(gofmt -l .)"
   `gofmt -l` lists any file; run `gofmt -w .` and check again.
 - Don't push while a check fails. Don't skip, delete or weaken a test to make a
   check pass; fix the code.
+- CI runs the same list, in `.github/workflows/ci.yaml`, and the backlog loop
+  runs it from the `verify` list in `.claude/backlog.json`. When you change one
+  list, change the others.
 
 ## Commits and pull requests
 
