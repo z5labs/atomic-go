@@ -45,17 +45,23 @@ var (
 
 // parse parses raw and checks it for the rules every URL in this package
 // shares, except userinfo, which is the caller's to judge. The result is
-// normalized as [normalize] describes.
+// normalized as [check] describes.
 func parse(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("serverurl: %w", err)
+		// A *url.Error quotes its input, which may hold a password or a
+		// token in the query, so only its cause is kept.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("serverurl: invalid URL: %w", err)
 	}
 	// url.Parse does not record a bare trailing '#', so it is looked for in
 	// raw. A '#' can appear in a parsed URL only as the fragment's
 	// delimiter.
 	if strings.Contains(raw, "#") {
-		return nil, urlError(ErrQueryOrFragment, u.Redacted())
+		return nil, urlError(ErrQueryOrFragment, u)
 	}
 	if err := check(u); err != nil {
 		return nil, err
@@ -64,29 +70,47 @@ func parse(raw string) (*url.URL, error) {
 }
 
 // check reports whether u, which this package owns, follows the shared
-// rules, and normalizes it in place: the scheme and host are lowercased and
-// a port that is the scheme's default is dropped.
+// rules, and normalizes it in place: the scheme and host are lowercased,
+// except for an IPv6 zone, and a port that is empty or the scheme's default
+// is dropped.
 func check(u *url.URL) error {
 	u.Scheme = strings.ToLower(u.Scheme)
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return urlError(ErrScheme, u.Redacted())
+		return urlError(ErrScheme, u)
 	}
 	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
-		return urlError(ErrQueryOrFragment, u.Redacted())
+		return urlError(ErrQueryOrFragment, u)
 	}
 	if u.Opaque != "" || u.Host == "" || u.Hostname() == "" {
-		return urlError(ErrHost, u.Redacted())
+		return urlError(ErrHost, u)
 	}
 	for i := 0; i < len(u.Host); i++ {
 		if u.Host[i] >= 0x80 {
-			return urlError(ErrHost, u.Redacted())
+			return urlError(ErrHost, u)
 		}
 	}
-	u.Host = strings.ToLower(u.Host)
-	if p := u.Port(); (u.Scheme == "http" && p == "80") || (u.Scheme == "https" && p == "443") {
+	u.Host = lowerHost(u.Host)
+	switch p := u.Port(); {
+	case p == "":
+		u.Host = strings.TrimSuffix(u.Host, ":")
+	case (u.Scheme == "http" && p == "80") || (u.Scheme == "https" && p == "443"):
 		u.Host = strings.TrimSuffix(u.Host, ":"+p)
 	}
 	return nil
+}
+
+// lowerHost lowercases host, a URL's host[:port], except for the zone of an
+// IPv6 address, which names an interface and may be case-sensitive.
+func lowerHost(host string) string {
+	if !strings.HasPrefix(host, "[") {
+		return strings.ToLower(host)
+	}
+	zone := strings.IndexByte(host, '%')
+	end := strings.IndexByte(host, ']')
+	if zone < 0 || end < zone {
+		return strings.ToLower(host)
+	}
+	return strings.ToLower(host[:zone]) + host[zone:end] + strings.ToLower(host[end:])
 }
 
 // clone returns a copy of u that shares nothing mutable with it.
@@ -125,8 +149,13 @@ func escapeSegments(p string) string {
 	return strings.Join(segs, "/")
 }
 
-func urlError(sentinel error, u string) error {
-	return fmt.Errorf("serverurl: %w: %q", sentinel, u)
+// urlError reports u as refused with sentinel. The URL is quoted without its
+// password, query or fragment, any of which may hold a secret.
+func urlError(sentinel error, u *url.URL) error {
+	shown := clone(u)
+	shown.RawQuery, shown.ForceQuery = "", false
+	shown.Fragment, shown.RawFragment = "", ""
+	return fmt.Errorf("serverurl: %w: %q", sentinel, shown.Redacted())
 }
 
 func slugError(kind, slug, reason string) error {

@@ -99,6 +99,38 @@ func TestServerApex(t *testing.T) {
 		})
 	}
 	require.Nil(t, serverurl.Server{}.Apex())
+
+	t.Run("a Server built by hand is checked", func(t *testing.T) {
+		for _, raw := range []string{"https://bob:secret@h/x", "https://h/x?q", "https://h/x#f", "ftp://h"} {
+			u, err := url.Parse(raw)
+			require.NoError(t, err)
+			require.Nil(t, serverurl.Server{URL: u}.Apex(), raw)
+		}
+
+		u, err := url.Parse("HTTPS://H:443/x/")
+		require.NoError(t, err)
+		before := u.String()
+		require.Equal(t, "https://h/x", serverurl.Server{URL: u}.Apex().String())
+		require.Equal(t, before, u.String(), "Apex must not change the Server's URL")
+	})
+}
+
+func TestParseServerNormalizes(t *testing.T) {
+	for _, tc := range []struct{ raw, wantHost string }{
+		{"https://h:", "h"},
+		{"https://h:443", "h"},
+		{"https://h:8443", "h:8443"},
+		{"http://[FE80::1%25EN0]:8080", "[fe80::1%EN0]:8080"},
+		{"http://[FE80::1]:", "[fe80::1]"},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			require.Equal(t, tc.wantHost, mustServer(t, tc.raw, false).URL.Host)
+		})
+	}
+
+	base, err := mustServer(t, "https://h:", false).OrgBase("alice")
+	require.NoError(t, err)
+	require.Equal(t, "https://alice.h", base.String())
 }
 
 func TestParseServerRefuses(t *testing.T) {
@@ -124,9 +156,18 @@ func TestParseServerRefuses(t *testing.T) {
 		})
 	}
 
-	t.Run("a password is not repeated in the error", func(t *testing.T) {
-		_, err := serverurl.ParseServer("https://bob:secret@atomic.storage", false)
-		require.Error(t, err)
-		require.NotContains(t, err.Error(), "secret")
+	t.Run("a secret is not repeated in the error", func(t *testing.T) {
+		for _, raw := range []string{
+			"https://bob:secret@atomic.storage",
+			"https://bob:secret@atomic.storage/%zz",
+			"https://bob:secret@atomic.storage:port",
+			"https://atomic.storage/?token=secret",
+			"https://atomic.storage/#secret",
+			"ftp://bob:secret@atomic.storage/?token=secret",
+		} {
+			_, err := serverurl.ParseServer(raw, false)
+			require.Error(t, err, raw)
+			require.NotContains(t, err.Error(), "secret", raw)
+		}
 	})
 }

@@ -42,7 +42,7 @@ func NewProject(orgBase *url.URL, workspace, project string) (Project, error) {
 		return Project{}, err
 	}
 	if u.User != nil {
-		return Project{}, urlError(ErrUserinfo, u.Redacted())
+		return Project{}, urlError(ErrUserinfo, u)
 	}
 	if err := checkSlug("workspace", workspace); err != nil {
 		return Project{}, err
@@ -123,6 +123,11 @@ func (p Project) WithRawQuery(q string) *url.URL {
 // then a trailing /code removed, then '/' and path appended
 // (docs/remote/transport.md#sibling-resources). Each segment of path is
 // escaped as a path segment. It returns nil for the zero Project.
+//
+// path names a resource of the protocol, such as the constant "refs/views";
+// it is not a slug and is not checked as one. A "." or ".." segment is kept
+// and a server resolving it would address something outside the project, so
+// never build path from input.
 func (p Project) Resource(path string) *url.URL {
 	u := clone(p.u)
 	if u == nil {
@@ -154,8 +159,9 @@ func (p Project) Origin() *url.URL {
 // result is not the server's apex: a single-tenant server's project URL has
 // no org label to remove, and an IPv4 host loses its first octet. Callers
 // that know the audience a token is for pass it explicitly rather than rely
-// on this. An IPv6 host holds no '.' and is kept whole. It returns nil for
-// the zero Project.
+// on this. An IPv6 host holds no '.' and is kept whole, and so is a host
+// whose only '.' is its last byte, such as "localhost.", rather than leave an
+// empty host. It returns nil for the zero Project.
 func (p Project) TokenApex() *url.URL {
 	if p.u == nil {
 		return nil
@@ -163,7 +169,7 @@ func (p Project) TokenApex() *url.URL {
 	host := p.u.Host
 	if !strings.HasPrefix(host, "[") {
 		name, port := p.u.Hostname(), p.u.Port()
-		if _, rest, ok := strings.Cut(name, "."); ok {
+		if _, rest, ok := strings.Cut(name, "."); ok && rest != "" {
 			host = rest
 			if port != "" {
 				host += ":" + port
@@ -185,14 +191,17 @@ func (p Project) Host() string {
 // RepoName returns the repository name the Rust client infers from the
 // path: the segment before the first "code" or ".atomic" segment, otherwise
 // the last segment that is neither, with a ".git" suffix removed
-// (docs/remote/transport.md#base-url-and-repository-name). It returns "" when
-// the path has no such segment, and for the zero Project.
+// (docs/remote/transport.md#base-url-and-repository-name). The segments are
+// those of the escaped path, as in the Rust client, so an escaped '/' does
+// not split a segment and the name is returned as escaped: "my%20repo", not
+// "my repo". It returns "" when the path has no such segment, and for the
+// zero Project.
 func (p Project) RepoName() string {
 	if p.u == nil {
 		return ""
 	}
 	var segs []string
-	for _, s := range strings.Split(p.u.Path, "/") {
+	for _, s := range strings.Split(p.u.EscapedPath(), "/") {
 		if s != "" {
 			segs = append(segs, s)
 		}

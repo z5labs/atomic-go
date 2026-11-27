@@ -222,6 +222,10 @@ func TestProjectTokenApex(t *testing.T) {
 		{"https://storage.acme.com/workspaces/w/projects/p/code", "https://acme.com"},
 		{"http://127.0.0.1:8080/x", "http://0.0.1:8080"},
 		{"http://[::1]:8080/x", "http://[::1]:8080"},
+
+		// Rather than an empty host.
+		{"https://localhost./x", "https://localhost."},
+		{"https://alice.localhost./x", "https://localhost."},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			require.Equal(t, tc.want, mustProject(t, tc.raw).TokenApex().String())
@@ -248,6 +252,10 @@ func TestProjectRepoName(t *testing.T) {
 		{"https://h/code", ""},
 		{"https://h/code/a", "a"},
 		{"https://h/", ""},
+
+		// Segments of the escaped path, as Rust's path_segments gives them.
+		{"https://h/a%2Fb/code", "a%2Fb"},
+		{"https://h/my%20repo/code", "my%20repo"},
 	} {
 		t.Run(tc.raw, func(t *testing.T) {
 			require.Equal(t, tc.want, mustProject(t, tc.raw).RepoName())

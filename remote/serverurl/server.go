@@ -16,7 +16,10 @@ import (
 // (docs/remote/transport.md#org-host).
 type Server struct {
 	// URL is the server profile's URL. Build it with [ParseServer], which
-	// checks and normalizes it.
+	// checks and normalizes it. The methods check it again and never change
+	// it, so a URL changed or set by hand after ParseServer cannot get past
+	// the checks; but a copy of a Server shares this pointer with the
+	// original, so treat the URL as read-only.
 	URL *url.URL
 
 	// SingleTenant reports that the server serves one org at URL.
@@ -35,7 +38,7 @@ func ParseServer(raw string, singleTenant bool) (Server, error) {
 		return Server{}, err
 	}
 	if u.User != nil {
-		return Server{}, urlError(ErrUserinfo, u.Redacted())
+		return Server{}, urlError(ErrUserinfo, u)
 	}
 	return Server{URL: u, SingleTenant: singleTenant}, nil
 }
@@ -75,7 +78,7 @@ func (s Server) OrgBase(org string) (*url.URL, error) {
 		}
 	}
 	if _, err := netip.ParseAddr(u.Hostname()); err == nil {
-		return nil, urlError(ErrHost, u.Redacted())
+		return nil, urlError(ErrHost, u)
 	}
 	return &url.URL{Scheme: u.Scheme, Host: strings.ToLower(org) + "." + u.Host}, nil
 }
@@ -83,11 +86,14 @@ func (s Server) OrgBase(org string) (*url.URL, error) {
 // Apex returns the server's management apex, the URL its cross-org
 // management calls go to and both management clients mint their tokens for:
 // the configured URL less every trailing '/'
-// (docs/remote/transport.md#apex-host, #management-api-base). It returns nil
-// for a Server whose URL is nil.
+// (docs/remote/transport.md#apex-host, #management-api-base).
+//
+// It returns nil for a Server whose URL is nil or does not follow
+// [ParseServer]'s rules, such as one built by hand with userinfo or a query,
+// so no apex it returns carries either. [Server.OrgBase] reports the reason.
 func (s Server) Apex() *url.URL {
-	u := clone(s.URL)
-	if u == nil {
+	u, err := s.checked()
+	if err != nil {
 		return nil
 	}
 	if strings.HasSuffix(u.Path, "/") {
@@ -106,7 +112,7 @@ func (s Server) checked() (*url.URL, error) {
 		return nil, err
 	}
 	if u.User != nil {
-		return nil, urlError(ErrUserinfo, u.Redacted())
+		return nil, urlError(ErrUserinfo, u)
 	}
 	return u, nil
 }
