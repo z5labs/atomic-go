@@ -11,6 +11,7 @@ import (
 	"github.com/z5labs/atomic-go/remote"
 	"github.com/z5labs/atomic-go/remote/internal/wire"
 	"github.com/z5labs/atomic-go/remote/syncproto"
+	"github.com/z5labs/atomic-go/zstdframe"
 )
 
 // The Rust client's names for the sync requests, used as [remote.Error.Op].
@@ -142,9 +143,11 @@ func (c *Client) readSummary(ctx context.Context, resp *wire.Response) PushSumma
 // A 200 body that is not valid zstd, or does not decompress to a pack, is a
 // [remote.KindVersionMismatch] carrying the server's minimum version, if it
 // sent one, and the client's. One that inflates past the Client's maximum
-// pack size ([WithMaxPackSize]) is a [remote.KindProtocol] "failed to
-// decode sync pack: …". A body that cannot be read, or a request that cannot
-// be sent, is a [remote.KindConnectionFailed]
+// pack size ([WithMaxPackSize]), whether in the pack's own zstd frame or in
+// a zstd Content-Encoding around it, is a [remote.KindProtocol] "failed to
+// decode sync pack: …". A body that cannot be read, including one cut
+// short of its Content-Length, or a request that cannot be sent, is a
+// [remote.KindConnectionFailed]
 // (docs/remote/errors.md#decode-failures-and-version-mismatch).
 func (c *Client) SyncPull(ctx context.Context, w syncproto.Wants) (syncproto.Pack, error) {
 	resp, err := c.pull(ctx, w)
@@ -267,6 +270,13 @@ func (c *Client) decodeError(ctx context.Context, resp *wire.Response, err error
 		e.Kind = remote.KindVersionMismatch
 		e.Message = err.Error()
 		e.ClientVersion = c.clientVersion
+	case errors.Is(err, zstdframe.ErrLimit):
+		// A zstd Content-Encoding that inflated past the same limit,
+		// before the codec saw it: the pack is too large either way. A
+		// zstdframe.ErrLimit from the codec's own decoder is a
+		// DecodeError, matched above.
+		e.Kind = remote.KindProtocol
+		e.Message = "failed to decode sync pack: " + err.Error()
 	default:
 		// The body could not be read: the connection failed, the
 		// request's context ended, or a Content-Encoding did not decode.

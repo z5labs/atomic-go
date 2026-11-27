@@ -3,6 +3,7 @@ package project_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/z5labs/atomic-go/remote/project"
 	"github.com/z5labs/atomic-go/remote/remotetest"
 	"github.com/z5labs/atomic-go/remote/syncproto"
+	"github.com/z5labs/atomic-go/zstdframe"
 )
 
 func requireRemoteError(t *testing.T, err error, kind remote.Kind) *remote.Error {
@@ -290,6 +292,71 @@ func TestSyncPullPastTheMaxPackSize(t *testing.T) {
 		c, _ := newClient(t, recordingHandler(new(seen), respond(http.StatusOK, body)), project.WithMaxPackSize(1<<20))
 		_, err := c.SyncPull(context.Background(), syncproto.All(nil))
 		require.NoError(t, err)
+	})
+}
+
+func TestSyncPullPastTheMaxPackSizeInAContentEncoding(t *testing.T) {
+	enc, err := zstdframe.NewEncoder(3)
+	require.NoError(t, err)
+	// The sync body itself is past the limit, so the Content-Encoding's
+	// cap is reached before the codec's.
+	body := enc.Compress(nil, mustEncodePack(t, bigPack(4096)))
+	for _, tc := range []struct {
+		name string
+		pull func(*project.Client) error
+	}{
+		{name: "SyncPull", pull: func(c *project.Client) error {
+			_, err := c.SyncPull(context.Background(), syncproto.All(nil))
+			return err
+		}},
+		{name: "SyncPullTo", pull: func(c *project.Client) error {
+			_, err := c.SyncPullTo(context.Background(), syncproto.All(nil), new(recordingSink))
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newClient(t, recordingHandler(new(seen), respond(http.StatusOK, body, "Content-Encoding", "zstd")), project.WithMaxPackSize(1024))
+
+			err := tc.pull(c)
+			re := requireRemoteError(t, err, remote.KindProtocol)
+			require.ErrorIs(t, err, zstdframe.ErrLimit)
+			require.False(t, re.Retryable())
+			require.True(t, strings.HasPrefix(re.Message, "failed to decode sync pack: "), re.Message)
+		})
+	}
+
+	t.Run("within the limit", func(t *testing.T) {
+		c, _ := newClient(t, recordingHandler(new(seen), respond(http.StatusOK, body, "Content-Encoding", "zstd")), project.WithMaxPackSize(1<<20))
+		got, err := c.SyncPull(context.Background(), syncproto.All(nil))
+		require.NoError(t, err)
+		require.Equal(t, bigPack(4096), got)
+	})
+}
+
+func TestSyncPullBodyCutShort(t *testing.T) {
+	enc := mustEncodePack(t, samplePack())
+
+	t.Run("by the transport", func(t *testing.T) {
+		// What net/http returns for a body shorter than its
+		// Content-Length: a read failure, not an undecodable pack.
+		body := &trackingBody{r: bytes.NewReader(enc[:len(enc)/2]), err: io.ErrUnexpectedEOF}
+		c, _ := newClientWithDoer(t, bodyDoer(http.StatusOK, body))
+
+		_, err := c.SyncPull(context.Background(), syncproto.All(nil))
+		re := requireRemoteError(t, err, remote.KindConnectionFailed)
+		require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+		require.True(t, re.Retryable())
+	})
+
+	t.Run("by the server", func(t *testing.T) {
+		// A complete response whose body is a truncated pack is a body
+		// that does not decode, as it is for the Rust client.
+		c, _ := newClient(t, recordingHandler(new(seen), respond(http.StatusOK, enc[:len(enc)/2])))
+
+		_, err := c.SyncPull(context.Background(), syncproto.All(nil))
+		requireRemoteError(t, err, remote.KindVersionMismatch)
+		var de *syncproto.DecodeError
+		require.ErrorAs(t, err, &de)
 	})
 }
 

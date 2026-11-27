@@ -77,8 +77,8 @@ func WithUserAgent(ua string) Option {
 }
 
 // WithMaxPackSize sets the most bytes a pulled pack may inflate to, which
-// also caps a response body sent with a zstd Content-Encoding. A pack past
-// it fails with a [remote.KindProtocol]. The default, and the largest size
+// also caps a response body sent with a zstd Content-Encoding. A pull past
+// either fails with a [remote.KindProtocol]. The default, and the largest size
 // allowed, is [syncproto.MaxDecodedSize]; n must be positive and no larger,
 // or [New] refuses it.
 func WithMaxPackSize(n int64) Option {

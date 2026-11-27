@@ -58,9 +58,14 @@ func TestSyncOverARealHTTPServer(t *testing.T) {
 		})}
 		served := make(chan error, 1)
 		go func() { served <- srv.Serve(ln) }()
+		// If a require below fails, these still stop the bubble's
+		// goroutines, so synctest reports the failure rather than a
+		// deadlock. Closing twice is harmless.
+		defer srv.Close()
 		<-h.Listening(":8080")
 
 		tr := &http.Transport{DialContext: h.DialTCP}
+		defer tr.CloseIdleConnections()
 		base, err := url.Parse("http://acme.internal:8080")
 		require.NoError(t, err)
 		u, err := serverurl.NewProject(base, "w", "p")
