@@ -102,12 +102,25 @@ func TestParseSnapshotErrors(t *testing.T) {
 		`{"scope":"shared","own_changes":"A","own_set_id":"S"}`,
 		`{"scope":"shared","own_changes":[],"own_set_id":"S"} x`,
 		"{\"scope\":\"sh\xffared\",\"own_changes\":[],\"own_set_id\":\"S\"}",
+		`{"scope":"shared","scope":"draft","own_changes":[],"own_set_id":"S"}`,
+		`{"scope":"shared","own_changes":["A",null],"own_set_id":"S"}`,
+		`{"scope":"shared","prev":[null],"own_changes":[],"own_set_id":"S"}`,
+		`{"scope":"shared","parent_view":"\ud800","own_changes":[],"own_set_id":"S"}`,
+		`{"scope":"shared","parent_view":"\udc00x","own_changes":[],"own_set_id":"S"}`,
+		`{"scope":"shared","parent_view":"\ud800\u0041","own_changes":[],"own_set_id":"S"}`,
+		`{"scope":"shared","x\ud800":1,"own_changes":[],"own_set_id":"S"}`,
 	} {
 		t.Run(in, func(t *testing.T) {
 			_, err := views.ParseSnapshot([]byte(in))
 			require.ErrorIs(t, err, views.ErrInvalidSnapshot)
 		})
 	}
+}
+
+func TestParseSnapshotSurrogatePair(t *testing.T) {
+	s, err := views.ParseSnapshot([]byte(`{"scope":"shared","parent_view":"\\u\ud83d\ude00","own_changes":[],"own_set_id":"S"}`))
+	require.NoError(t, err)
+	require.Equal(t, "\\u\U0001F600", s.ParentView)
 }
 
 func TestSnapshotIsDraft(t *testing.T) {
@@ -152,6 +165,15 @@ func TestFromManifest(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, m, back)
 		require.NoError(t, back.Verify())
+	})
+
+	t.Run("merkle_state comes from the log, not the declared state", func(t *testing.T) {
+		s := views.FromManifest(views.Manifest{Name: "dev", Scope: ident.ScopeShared, State: &state}, "")
+		require.Equal(t, "", s.MerkleState)
+		require.NotContains(t, string(s.MarshalCanonical()), "merkle_state")
+
+		s = views.FromManifest(views.Manifest{Name: "dev", Scope: ident.ScopeShared, Changes: []ident.Hash{c1, c2}}, "")
+		require.Equal(t, state.String(), s.MerkleState)
 	})
 
 	t.Run("scope Draft writes draft", func(t *testing.T) {

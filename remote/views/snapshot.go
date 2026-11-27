@@ -1,9 +1,11 @@
 package views
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"unicode/utf8"
 
 	"github.com/z5labs/atomic-go/ident"
@@ -17,8 +19,11 @@ var ErrInvalidSnapshot = errors.New("views: invalid view snapshot")
 // lineage and change log, carried as a View object and keyed by the BLAKE3
 // of its canonical JSON.
 //
-// Hashes are kept as text, so a snapshot that was parsed re-marshals to the
-// bytes it was read from, and so to the same key.
+// Hashes are kept as text, so a snapshot parsed from canonical bytes, such
+// as those Atomic writes, re-marshals to those bytes and so to the same key.
+// Bytes that are not canonical, with white space, other escapes or another
+// member order, parse but re-marshal differently: to check a received View
+// object against its key, hash the bytes received.
 //
 // The format is documented in docs/remote/endpoints/project.md, under
 // ViewSnapshot.
@@ -50,12 +55,12 @@ type Snapshot struct {
 // [ident.ScopeDraft] when m's scope is draft, in any case, and
 // [ident.ScopeShared] otherwise. Prev is the one key prev, or none when
 // prev is "". OwnChanges is m's log in base32 and log order, OwnSetID is
-// [ident.SetIDOf] the log, and MerkleState is m's declared State, or ""
-// when it has none.
+// [ident.SetIDOf] the log, and MerkleState is [Manifest.Fold] of the log, or
+// "" when the log is empty.
 //
-// FromManifest copies m as it is and does not verify it; call
-// [Manifest.Verify] first for a manifest that was not computed locally. A
-// draft's log is copied unchanged, whether or not it includes changes
+// Every derived field comes from the log, so m's declared State is not
+// read. For a manifest that passes [Manifest.Verify] it is the same state,
+// and the snapshot is the one Atomic's push mints from it. A draft's log is copied unchanged, whether or not it includes changes
 // inherited from the parent; see the open question on own_changes in
 // docs/remote/endpoints/project.md.
 func FromManifest(m Manifest, prev string) Snapshot {
@@ -76,8 +81,8 @@ func FromManifest(m Manifest, prev string) Snapshot {
 			s.OwnChanges[i] = h.String()
 		}
 	}
-	if m.State != nil {
-		s.MerkleState = m.State.String()
+	if state := m.Fold(); state != nil {
+		s.MerkleState = state.String()
 	}
 	return s
 }
@@ -165,27 +170,30 @@ func (s Snapshot) Manifest(name string) (Manifest, error) {
 	return m, nil
 }
 
-// ParseSnapshot parses the JSON of a view snapshot. scope, own_changes and
+// ParseSnapshot parses the JSON of a view snapshot, refusing what
+// serde_json refuses when Atomic reads one. scope, own_changes and
 // own_set_id are required; parent_view, prev and merkle_state may be
 // absent or null. Member names are matched exactly, and members it does
-// not know are ignored, as serde_json ignores them. Empty lists read as
-// nil.
+// not know are ignored, as serde_json ignores them. A member given twice,
+// a null in prev or own_changes, input that is not valid UTF-8, and a
+// \u escape of an unpaired surrogate are refused. Empty lists read as nil.
 //
 // A failure wraps [ErrInvalidSnapshot].
 func ParseSnapshot(b []byte) (Snapshot, error) {
 	if !utf8.Valid(b) {
 		return Snapshot{}, fmt.Errorf("%w: not valid UTF-8", ErrInvalidSnapshot)
 	}
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(b, &members); err != nil {
+	if err := checkSurrogates(b); err != nil {
 		return Snapshot{}, fmt.Errorf("%w: %v", ErrInvalidSnapshot, err)
 	}
-	if members == nil {
-		return Snapshot{}, fmt.Errorf("%w: not a JSON object", ErrInvalidSnapshot)
+	members, err := objectMembers(b)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("%w: %v", ErrInvalidSnapshot, err)
 	}
 
 	var s Snapshot
 	var scope string
+	var prev, ownChanges []*string
 	for _, f := range []struct {
 		name     string
 		required bool
@@ -193,8 +201,8 @@ func ParseSnapshot(b []byte) (Snapshot, error) {
 	}{
 		{"scope", true, &scope},
 		{"parent_view", false, &s.ParentView},
-		{"prev", false, &s.Prev},
-		{"own_changes", true, &s.OwnChanges},
+		{"prev", false, &prev},
+		{"own_changes", true, &ownChanges},
 		{"own_set_id", true, &s.OwnSetID},
 		{"merkle_state", false, &s.MerkleState},
 	} {
@@ -210,13 +218,128 @@ func ParseSnapshot(b []byte) (Snapshot, error) {
 		}
 	}
 	s.Scope = ident.Scope(scope)
-	if len(s.Prev) == 0 {
-		s.Prev = nil
+	if s.Prev, err = nonNullStrings("prev", prev); err != nil {
+		return Snapshot{}, err
 	}
-	if len(s.OwnChanges) == 0 {
-		s.OwnChanges = nil
+	if s.OwnChanges, err = nonNullStrings("own_changes", ownChanges); err != nil {
+		return Snapshot{}, err
 	}
 	return s, nil
+}
+
+// nonNullStrings returns the strings of ps, or nil when ps is empty. A nil
+// element, a JSON null, is an error naming member.
+func nonNullStrings(member string, ps []*string) ([]string, error) {
+	if len(ps) == 0 {
+		return nil, nil
+	}
+	ss := make([]string, len(ps))
+	for i, p := range ps {
+		if p == nil {
+			return nil, fmt.Errorf("%w: %s[%d] is null", ErrInvalidSnapshot, member, i)
+		}
+		ss[i] = *p
+	}
+	return ss, nil
+}
+
+// objectMembers reads b as one JSON object, with nothing but white space
+// after it, and returns its members' raw values by name. A name given
+// twice is an error, as it is to a serde-derived struct.
+func objectMembers(b []byte) (map[string]json.RawMessage, error) {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	if tok != json.Delim('{') {
+		return nil, errors.New("not a JSON object")
+	}
+	members := make(map[string]json.RawMessage)
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, ok := tok.(string)
+		if !ok {
+			return nil, errors.New("member name is not a string")
+		}
+		if _, dup := members[name]; dup {
+			return nil, fmt.Errorf("duplicate member %q", name)
+		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return nil, err
+		}
+		members[name] = raw
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		if err == nil {
+			err = errors.New("data after the object")
+		}
+		return nil, err
+	}
+	return members, nil
+}
+
+// checkSurrogates refuses a \u escape in b of a surrogate that is not half
+// of a high-low pair, which serde_json refuses and encoding/json reads as
+// U+FFFD. Outside strings valid JSON holds no backslash, so b is scanned
+// whole; anything else wrong with b is left to the decoder.
+func checkSurrogates(b []byte) error {
+	for i := 0; i < len(b); i++ {
+		if b[i] != '\\' {
+			continue
+		}
+		if i+1 >= len(b) || b[i+1] != 'u' {
+			i++
+			continue
+		}
+		r, ok := hex4(b[i+2:])
+		if !ok {
+			return nil
+		}
+		i += 5
+		switch {
+		case r >= 0xDC00 && r <= 0xDFFF:
+			return fmt.Errorf("unpaired surrogate \\u%04x", r)
+		case r >= 0xD800 && r <= 0xDBFF:
+			lo, ok := rune(0), false
+			if i+6 < len(b) && b[i+1] == '\\' && b[i+2] == 'u' {
+				lo, ok = hex4(b[i+3:])
+			}
+			if !ok || lo < 0xDC00 || lo > 0xDFFF {
+				return fmt.Errorf("unpaired surrogate \\u%04x", r)
+			}
+			i += 6
+		}
+	}
+	return nil
+}
+
+// hex4 reads four hex digits from the start of b.
+func hex4(b []byte) (rune, bool) {
+	if len(b) < 4 {
+		return 0, false
+	}
+	var r rune
+	for _, c := range b[:4] {
+		switch {
+		case '0' <= c && c <= '9':
+			r = r<<4 | rune(c-'0')
+		case 'a' <= c && c <= 'f':
+			r = r<<4 | rune(c-'a'+10)
+		case 'A' <= c && c <= 'F':
+			r = r<<4 | rune(c-'A'+10)
+		default:
+			return 0, false
+		}
+	}
+	return r, true
 }
 
 // appendJSONStrings appends ss to b as a JSON array of strings.
