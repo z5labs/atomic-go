@@ -2,6 +2,12 @@ module github.com/z5labs/atomic-go
 
 go 1.27.0
 
-require github.com/stretchr/testify v1.12.1
+require (
+	github.com/stretchr/testify v1.12.1
+	lukechampine.com/blake3 v1.4.1
+)
 
-require go.yaml.in/yaml/v3 v3.0.5 // indirect
+require (
+	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
+)
