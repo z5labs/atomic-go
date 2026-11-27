@@ -94,7 +94,14 @@ func NewRequester(doer Doer, logger *slog.Logger, p Profile) *Requester {
 	if p.MaxDecoded < 0 {
 		panic(fmt.Sprintf("wire: NewRequester: negative MaxDecoded %d", p.MaxDecoded))
 	}
-	p.Header = p.Header.Clone()
+	// Canonical keys, so a request header always replaces the default of
+	// the same name however either was spelled.
+	h := make(http.Header, len(p.Header))
+	for name, values := range p.Header {
+		k := http.CanonicalHeaderKey(name)
+		h[k] = append(h[k], values...)
+	}
+	p.Header = h
 	return &Requester{doer: doer, logger: logger, profile: p}
 }
 
@@ -124,7 +131,10 @@ type Request struct {
 	// Stream is a request body read as it is sent, of exactly StreamLength
 	// bytes; the send fails if it holds fewer or more. A StreamLength of 0
 	// sends no body and does not read Stream. At most one of Body and
-	// Stream may be set. Stream is never closed.
+	// Stream may be set. Stream is never closed, and net/http may still be
+	// reading it after Do returns, when the server answers before the
+	// upload ends: do not reuse or close it until the response body is
+	// closed.
 	Stream       io.Reader
 	StreamLength int64
 }
@@ -137,7 +147,11 @@ type Response struct {
 	// Content-Encoding and Content-Length.
 	Header http.Header
 
-	// Body is the decoded body. The caller must close it.
+	// Body is the decoded body. The caller must close it. A Read error,
+	// including a body that fails to decode or a zstd body past
+	// MaxDecoded, is the caller's to classify; the Rust client reports a
+	// success body it cannot read as a [remote.KindConnectionFailed]
+	// (docs/remote/errors.md#failures-without-a-usable-response).
 	Body io.ReadCloser
 
 	// URL is the request URL without its userinfo.
@@ -233,9 +247,10 @@ func (q *Requester) newRequest(ctx context.Context, method string, r Request) (*
 		return nil, fmt.Errorf("wire: negative StreamLength %d", r.StreamLength)
 	}
 
-	// The URL is parsed here only to satisfy NewRequestWithContext; it is
-	// replaced below by a copy of r.URL so RawQuery is sent as built.
-	req, err := http.NewRequestWithContext(ctx, method, r.URL.String(), nil)
+	// The request is built with an empty URL and given a copy of r.URL,
+	// rather than r.URL's text, so RawQuery is sent as built and no parse
+	// error can carry the URL's userinfo into an error.
+	req, err := http.NewRequestWithContext(ctx, method, "", nil)
 	if err != nil {
 		return nil, fmt.Errorf("wire: new request: %w", err)
 	}

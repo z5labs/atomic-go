@@ -264,6 +264,20 @@ func TestHeaders(t *testing.T) {
 		require.Equal(t, []string{"1"}, got.header.Values("Atomic-Protocol"))
 	})
 
+	t.Run("a request header replaces a non-canonical default", func(t *testing.T) {
+		var got seen
+		p := defaultProfile()
+		p.Header = http.Header{"authorization": {"Bearer default"}}
+		rq := newRequester(recordingHandler(&got, ok), remotetest.NewLogRecorder(), p)
+
+		do(t, rq, wire.Request{
+			URL:    mustURL(t, "https://example.com/code"),
+			Header: http.Header{"Authorization": {"Bearer mine"}},
+		})
+
+		require.Equal(t, []string{"Bearer mine"}, got.header.Values("Authorization"))
+	})
+
 	t.Run("the profile is copied", func(t *testing.T) {
 		var got seen
 		p := defaultProfile()
@@ -397,16 +411,18 @@ func TestContentEncoding(t *testing.T) {
 		require.Error(t, err)
 	})
 
-	t.Run("an empty encoded body reads as empty", func(t *testing.T) {
-		h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Encoding", "gzip")
-			w.WriteHeader(http.StatusOK)
-		})
-		rq := newRequester(h, remotetest.NewLogRecorder(), defaultProfile())
+	for _, coding := range []string{"gzip", "x-gzip", "deflate", "zstd"} {
+		t.Run("an empty "+coding+" body reads as empty", func(t *testing.T) {
+			h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Encoding", coding)
+				w.WriteHeader(http.StatusNoContent)
+			})
+			rq := newRequester(h, remotetest.NewLogRecorder(), defaultProfile())
 
-		_, b := do(t, rq, wire.Request{URL: mustURL(t, "https://example.com/code")})
-		require.Empty(t, b)
-	})
+			_, b := do(t, rq, wire.Request{URL: mustURL(t, "https://example.com/code")})
+			require.Empty(t, b)
+		})
+	}
 }
 
 func TestTextIsNotTranscoded(t *testing.T) {
@@ -555,6 +571,26 @@ func TestSendFailures(t *testing.T) {
 		require.ErrorAs(t, err, &rerr)
 		require.True(t, rerr.ContextDone)
 		require.False(t, rerr.Retryable())
+	})
+
+	t.Run("userinfo never reaches the error", func(t *testing.T) {
+		doer := &http.Client{Transport: remotetest.RoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("connection refused")
+		})}
+		rq := wire.NewRequester(doer, remotetest.NewLogRecorder().Logger(), defaultProfile())
+
+		// A URL whose text would not parse back, as a re-parse of
+		// r.URL.String() would have reported with the password in it.
+		u := &url.URL{Scheme: "https", User: url.UserPassword("bob", "hunter2"), Host: "example.com:abc", Path: "/x"}
+		_, err := rq.Do(context.Background(), wire.Request{URL: u})
+		require.Error(t, err)
+		for e := err; e != nil; e = errors.Unwrap(e) {
+			require.NotContains(t, e.Error(), "hunter2")
+		}
+		var rerr *remote.Error
+		require.ErrorAs(t, err, &rerr)
+		require.Equal(t, "https://example.com:abc/x", rerr.URL)
+		require.NotContains(t, rerr.Message, "hunter2")
 	})
 
 	t.Run("a send failure with a live ctx is retryable", func(t *testing.T) {

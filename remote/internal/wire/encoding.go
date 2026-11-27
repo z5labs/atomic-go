@@ -1,6 +1,7 @@
 package wire
 
 import (
+	"bytes"
 	"compress/gzip"
 	"compress/zlib"
 	"fmt"
@@ -13,7 +14,7 @@ import (
 
 // decodeBody returns resp's body with every coding its Content-Encoding
 // lists undone, last applied first. Each decoder starts on the body's first
-// Read, so a malformed body fails when it is read rather than here; only a
+// Read, an empty body decoding to an empty body, so a malformed body fails when it is read rather than here; only a
 // coding the package does not know fails here.
 func decodeBody(resp *http.Response, maxDecoded int64) (io.ReadCloser, error) {
 	var codings []string
@@ -74,12 +75,19 @@ func (d *lazyDecoder) Read(p []byte) (int, error) {
 		return 0, d.err
 	}
 	if d.dec == nil {
-		dec, err := d.open(d.src)
+		// An empty body decodes to an empty body, whatever the coding;
+		// zlib, for one, would call it truncated.
+		var first [1]byte
+		n, err := io.ReadFull(d.src, first[:])
 		if err == io.EOF {
-			// An empty body decodes to an empty body.
 			d.err = io.EOF
 			return 0, d.err
 		}
+		if err != nil {
+			d.err = err
+			return 0, d.err
+		}
+		dec, err := d.open(io.MultiReader(bytes.NewReader(first[:n]), d.src))
 		if err != nil {
 			d.err = fmt.Errorf("wire: decode response body: %w", err)
 			return 0, d.err
