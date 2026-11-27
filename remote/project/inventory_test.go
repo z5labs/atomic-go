@@ -3,6 +3,7 @@ package project_test
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -225,6 +226,22 @@ func TestNewerMinVersionWarns(t *testing.T) {
 				return err
 			},
 			path: projectPath + "?project-identity=1",
+		},
+		{
+			name: "DownloadChange",
+			call: func(c *project.Client) error {
+				_, err := c.DownloadChange(context.Background(), ident.Hash{})
+				return err
+			},
+			path: projectPath + "?change=" + ident.Hash{}.String(),
+		},
+		{
+			name: "DownloadChangeTo",
+			call: func(c *project.Client) error {
+				_, err := c.DownloadChangeTo(context.Background(), ident.Hash{}, io.Discard)
+				return err
+			},
+			path: projectPath + "?change=" + ident.Hash{}.String(),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

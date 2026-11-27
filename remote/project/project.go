@@ -6,18 +6,20 @@
 // [Client.SyncPullTo], so that memory stays bounded by the largest object
 // rather than the whole pack. [Client.ListViewRefs] lists the remote's
 // views, [Client.FetchProjectIdentity] reads the identity a project has
-// bound and [Client.BindProjectIdentity] offers one. Every failed request
-// comes back as a [*remote.Error] whose [remote.Kind] is the one the Atomic
-// CLI maps the same failure to, except where a method says it deviates.
+// bound and [Client.BindProjectIdentity] offers one. [Client.DownloadChange]
+// fetches one change file by its hash, and [Client.DownloadChangeTo]
+// streams one into an [io.Writer]. Every failed request comes back as a
+// [*remote.Error] whose [remote.Kind] is the one the Atomic CLI maps the
+// same failure to, except where a method says it deviates.
 //
 // A server that predates the identity endpoint is not a failure: both
 // identity requests report it as unsupported, so a program can run against
 // old and new servers alike.
 //
 // The requests are documented in docs/remote/endpoints/project.md, under
-// Sync protocol, View inventory and Project identity, and their failures in
-// docs/remote/errors.md, under Project-protocol failures and Decode failures
-// and version mismatch.
+// Sync protocol, Reads, View inventory and Project identity, and their
+// failures in docs/remote/errors.md, under Project-protocol failures and
+// Decode failures and version mismatch.
 //
 // # Host dependencies
 //
@@ -84,8 +86,9 @@ func WithUserAgent(ua string) Option {
 }
 
 // WithMaxPackSize sets the most bytes a pulled pack may inflate to, which
-// also caps a response body sent with a zstd Content-Encoding. A pull past
-// either fails with a [remote.KindProtocol]. The default, and the largest size
+// also caps a response body sent with a zstd Content-Encoding and the
+// change file [Client.DownloadChange] reads into memory. A request past
+// any of them fails with a [remote.KindProtocol]. The default, and the largest size
 // allowed, is [syncproto.MaxDecodedSize]; n must be positive and no larger,
 // or [New] refuses it.
 func WithMaxPackSize(n int64) Option {
