@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"testing/iotest"
 
@@ -360,6 +361,21 @@ func TestDecodeWants(t *testing.T) {
 	})
 }
 
+func TestDecodePackBytesAreCapped(t *testing.T) {
+	c := syncproto.NewCodec()
+	p := syncproto.Pack{Objects: []syncproto.ObjectRecord{
+		{Family: syncproto.Change, Key: "a", Bytes: []byte("first")},
+		{Family: syncproto.Change, Key: "b", Bytes: []byte("second")},
+	}}
+	body, err := c.EncodePack(p)
+	require.NoError(t, err)
+	got, err := c.DecodePack(bytes.NewReader(body))
+	require.NoError(t, err)
+	require.Equal(t, len(got.Objects[0].Bytes), cap(got.Objects[0].Bytes))
+	_ = append(got.Objects[0].Bytes, "XXXXXXXXXXXX"...)
+	require.Equal(t, p, got)
+}
+
 func TestStreamPack(t *testing.T) {
 	c := syncproto.NewCodec()
 	body, err := c.EncodePack(goldenPack())
@@ -433,12 +449,16 @@ func TestConcurrentEncode(t *testing.T) {
 	}
 	const n = 16
 	results := make(chan result, n)
+	var wg sync.WaitGroup
 	for range n {
-		go func() {
+		wg.Go(func() {
 			body, err := c.EncodePack(goldenPack())
 			results <- result{body, err}
-		}()
+		})
 	}
+	// Wait for every goroutine to exit, not just to send, so none is
+	// still counted by TestNoGoroutines.
+	defer wg.Wait()
 	for range n {
 		r := <-results
 		require.NoError(t, r.err)
@@ -460,8 +480,9 @@ func TestConcurrentDecode(t *testing.T) {
 	}
 	const n = 16
 	results := make(chan result, n)
+	var wg sync.WaitGroup
 	for i := range n {
-		go func() {
+		wg.Go(func() {
 			var p syncproto.Pack
 			var err error
 			if i%2 == 0 {
@@ -470,8 +491,9 @@ func TestConcurrentDecode(t *testing.T) {
 				p, err = collect(c, bytes.NewReader(body))
 			}
 			results <- result{p, err}
-		}()
+		})
 	}
+	defer wg.Wait()
 	for range n {
 		r := <-results
 		require.NoError(t, r.err)

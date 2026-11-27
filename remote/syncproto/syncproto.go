@@ -32,7 +32,7 @@ const (
 
 	// MaxDecodedSize is the most bytes a body may inflate to by default,
 	// 2 GiB, the limit Atomic's own decoder applies.
-	MaxDecodedSize = 2 << 30
+	MaxDecodedSize int64 = 2 << 30
 )
 
 // Family is the family an object in transit belongs to. Its value is the

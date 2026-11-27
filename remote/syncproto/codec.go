@@ -115,6 +115,12 @@ func (c *Codec) EncodeWants(w Wants) ([]byte, error) {
 // it. Bytes after the pack are ignored. The whole decoded body is held in
 // memory; [Codec.StreamPack] holds one object at a time.
 //
+// The objects' Bytes are not copied out of the decoded body: they share one
+// buffer, so keeping any of them keeps the whole body alive. Clone the
+// Bytes of an object kept longer than the rest of the pack. Each one's
+// capacity ends where its bytes do, so appending to one never overwrites
+// another.
+//
 // A body that inflates past the Codec's limit is [ErrTooLarge]; one that is
 // not valid zstd, or not a postcard Pack, is a *[DecodeError]. An error
 // from r is returned wrapped, so [errors.Is] reaches it, and is neither.

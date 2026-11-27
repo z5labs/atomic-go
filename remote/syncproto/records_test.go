@@ -49,7 +49,7 @@ func TestConstants(t *testing.T) {
 	require.Equal(t, "Atomic-Protocol", syncproto.ProtocolHeader)
 	require.Equal(t, "sync/1", syncproto.ProtocolVersion)
 	require.Equal(t, "application/vnd.atomic.sync.v1", syncproto.ContentType)
-	require.EqualValues(t, int64(2)<<30, syncproto.MaxDecodedSize)
+	require.Equal(t, int64(2)<<30, syncproto.MaxDecodedSize)
 }
 
 func TestFamily(t *testing.T) {
