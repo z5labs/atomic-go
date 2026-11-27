@@ -4,13 +4,20 @@
 // A [Client] pushes a [syncproto.Pack] with [Client.SyncPush] and pulls one
 // with [Client.SyncPull], or streams a pull into an [ObjectSink] with
 // [Client.SyncPullTo], so that memory stays bounded by the largest object
-// rather than the whole pack. Every failed request comes back as a
-// [*remote.Error] whose [remote.Kind] is the one the Atomic CLI maps the
-// same failure to.
+// rather than the whole pack. [Client.ListViewRefs] lists the remote's
+// views, [Client.FetchProjectIdentity] reads the identity a project has
+// bound and [Client.BindProjectIdentity] offers one. Every failed request
+// comes back as a [*remote.Error] whose [remote.Kind] is the one the Atomic
+// CLI maps the same failure to, except where a method says it deviates.
+//
+// A server that predates the identity endpoint is not a failure: both
+// identity requests report it as unsupported, so a program can run against
+// old and new servers alike.
 //
 // The requests are documented in docs/remote/endpoints/project.md, under
-// Sync protocol, and their failures in docs/remote/errors.md, under
-// Project-protocol failures and Decode failures and version mismatch.
+// Sync protocol, View inventory and Project identity, and their failures in
+// docs/remote/errors.md, under Project-protocol failures and Decode failures
+// and version mismatch.
 //
 // # Host dependencies
 //
@@ -100,6 +107,7 @@ type Client struct {
 	codec         *syncproto.Codec
 	logger        *slog.Logger
 	clientVersion string
+	maxPackSize   int64
 }
 
 // New returns a Client for the project at u, sending through doer and
@@ -160,6 +168,7 @@ func New(u serverurl.Project, doer Doer, logger *slog.Logger, clientVersion stri
 		codec:         syncproto.NewCodec(syncproto.WithMaxDecodedSize(cfg.maxPackSize)),
 		logger:        logger,
 		clientVersion: clientVersion,
+		maxPackSize:   cfg.maxPackSize,
 	}, nil
 }
 
