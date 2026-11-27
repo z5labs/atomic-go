@@ -76,9 +76,11 @@ var (
 	ErrTooLong = errors.New("length above limit")
 )
 
-// Error is a decoding failure. Err is one of the package's sentinel errors,
-// an error passed to [Decoder.Fail], or the error of a [Reader]'s
-// underlying reader, so callers can test it with [errors.Is].
+// Error is a decoding failure. Err is, or wraps, one of the package's
+// sentinel errors, an error passed to [Decoder.Fail], or the error of a
+// [Reader]'s underlying reader. Test it with [errors.Is], not by comparing
+// Err: when a [Reader]'s input ends inside a value, Err wraps both
+// [ErrUnexpectedEnd] and the reader's [io.EOF] or [io.ErrUnexpectedEOF].
 type Error struct {
 	// Offset is the byte offset in the input at which the value that
 	// failed begins.

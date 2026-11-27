@@ -92,8 +92,10 @@ func (e *Encoder) ByteSeq(b []byte) {
 	e.buf = append(e.buf, b...)
 }
 
-// Str writes a string: its byte length, then its bytes. s should be valid
-// UTF-8, since a decoder refuses anything else.
+// Str writes a string: its byte length, then its bytes. Str does not check
+// s, and a Go string can hold any bytes, so the caller must make sure s is
+// valid UTF-8: this package's decoders, and Atomic's, refuse anything else
+// with [ErrBadUTF8].
 func (e *Encoder) Str(s string) {
 	e.varint(uint64(len(s)))
 	e.buf = append(e.buf, s...)

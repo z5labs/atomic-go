@@ -353,6 +353,47 @@ func TestHostileCount(t *testing.T) {
 	requireError(t, err, postcard.ErrUnexpectedEnd, 0)
 	require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(1<<20))
 
+	t.Run("a count that fits the input does not size the allocation", func(t *testing.T) {
+		// A count equal to Remaining passes SeqLen. Reserving it for 1 KiB
+		// elements would take 64 MiB, but the first element fails at
+		// once.
+		const n = 64 << 10
+		in := encode(func(e *postcard.Encoder) { e.SeqLen(n) })
+		in = append(in, bytes.Repeat([]byte{0x02}, n)...)
+
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		_, err := postcard.Decode(in, func(d *postcard.Decoder) [][1024]byte {
+			return postcard.Seq(d, func(d *postcard.Decoder) [1024]byte {
+				var v [1024]byte
+				if d.Bool() {
+					v[0] = 1
+				}
+				return v
+			})
+		})
+		runtime.ReadMemStats(&after)
+
+		requireError(t, err, postcard.ErrBadBool, 3)
+		require.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(4<<20))
+	})
+
+	t.Run("a long sequence of large elements still decodes", func(t *testing.T) {
+		const n = 3000
+		in := encode(func(e *postcard.Encoder) {
+			postcard.PutSeq(e, make([][1024]byte, n), func(e *postcard.Encoder, v [1024]byte) { e.Fixed(v[:]) })
+		})
+		got, err := postcard.DecodeExact(in, func(d *postcard.Decoder) [][1024]byte {
+			return postcard.Seq(d, func(d *postcard.Decoder) [1024]byte {
+				var v [1024]byte
+				copy(v[:], d.Fixed(len(v)))
+				return v
+			})
+		})
+		require.NoError(t, err)
+		require.Len(t, got, n)
+	})
+
 	t.Run("SeqLen fails once the count exceeds Remaining", func(t *testing.T) {
 		d := postcard.NewDecoder([]byte{0x03, 0x01, 0x02})
 		require.Equal(t, 0, d.SeqLen())
@@ -369,16 +410,16 @@ func TestReaderLimits(t *testing.T) {
 	declared := encode(func(e *postcard.Encoder) { e.U64(1 << 40) })
 
 	t.Run("a declared length of 2^40 against maxLen 1024", func(t *testing.T) {
-		for name, read := range map[string]func(*postcard.Reader){
-			"ByteSeq": func(r *postcard.Reader) { require.Nil(t, r.ByteSeq()) },
-			"Str":     func(r *postcard.Reader) { require.Empty(t, r.Str()) },
-			"SeqLen":  func(r *postcard.Reader) { require.Zero(t, r.SeqLen()) },
+		for name, read := range map[string]func(*testing.T, *postcard.Reader){
+			"ByteSeq": func(t *testing.T, r *postcard.Reader) { require.Nil(t, r.ByteSeq()) },
+			"Str":     func(t *testing.T, r *postcard.Reader) { require.Empty(t, r.Str()) },
+			"SeqLen":  func(t *testing.T, r *postcard.Reader) { require.Zero(t, r.SeqLen()) },
 		} {
 			t.Run(name, func(t *testing.T) {
 				var before, after runtime.MemStats
 				runtime.ReadMemStats(&before)
 				r := postcard.NewReader(bytes.NewReader(declared), 1024)
-				read(r)
+				read(t, r)
 				runtime.ReadMemStats(&after)
 				requireError(t, r.Err(), postcard.ErrTooLong, 0)
 				require.Equal(t, int64(len(declared)), r.Offset())

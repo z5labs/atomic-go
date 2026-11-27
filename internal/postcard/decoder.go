@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"unicode/utf8"
+	"unsafe"
 )
 
 // Decoder decodes postcard values from a byte slice, one field at a time.
@@ -31,7 +32,9 @@ func (d *Decoder) Err() error {
 	return d.err
 }
 
-// Offset returns the number of bytes decoded so far.
+// Offset returns the number of bytes decoded so far. After a failure it is
+// the offset at which the failed value begins, which is also the *[Error]'s
+// Offset.
 func (d *Decoder) Offset() int64 {
 	return int64(d.off)
 }
@@ -274,10 +277,14 @@ func (d *Decoder) OptionTag() bool {
 	return false
 }
 
-// SeqLen decodes the element count of a sequence (Vec<T>, &[T]). Every
-// element of every type this package decodes takes at least one byte, so a
-// count above [Decoder.Remaining] fails at once with [ErrUnexpectedEnd],
-// before the caller allocates anything for it.
+// SeqLen decodes the element count of a sequence (Vec<T>, &[T]). A count
+// above [Decoder.Remaining] fails at once with [ErrUnexpectedEnd], before
+// the caller allocates anything for it.
+//
+// That rule is deliberately stricter than postcard's: it assumes every
+// element takes at least one byte, which is true of every type in an Atomic
+// payload. postcard itself accepts such a count for a zero-sized element
+// type, such as `05` as a Vec<()> of five units; this package refuses it.
 func (d *Decoder) SeqLen() int {
 	n, _ := d.length()
 	return n
@@ -315,13 +322,16 @@ func Option[T any](d *Decoder, decode func(*Decoder) T) *T {
 
 // Seq decodes a Vec<T>, calling decode for each element. It returns nil on
 // failure. A count larger than the input fails before anything is
-// allocated; see [Decoder.SeqLen].
+// allocated; see [Decoder.SeqLen]. A count that fits the input is still
+// not trusted for the allocation: like serde's Vec visitor, Seq reserves at
+// most [maxPrealloc] bytes up front and grows the slice as elements
+// actually decode.
 func Seq[T any](d *Decoder, decode func(*Decoder) T) []T {
 	n := d.SeqLen()
 	if d.err != nil {
 		return nil
 	}
-	out := make([]T, 0, n)
+	out := make([]T, 0, preallocLen[T](n))
 	for range n {
 		v := decode(d)
 		if d.err != nil {
@@ -330,6 +340,20 @@ func Seq[T any](d *Decoder, decode func(*Decoder) T) []T {
 		out = append(out, v)
 	}
 	return out
+}
+
+// maxPrealloc bounds the bytes [Seq] reserves before decoding any
+// element, as serde's size_hint::cautious does.
+const maxPrealloc = 1 << 20
+
+// preallocLen returns how many elements of T to reserve for a count of n.
+func preallocLen[T any](n int) int {
+	var zero T
+	size := int(unsafe.Sizeof(zero))
+	if size == 0 {
+		return n
+	}
+	return min(n, max(1, maxPrealloc/size))
 }
 
 // Decode decodes one value from b with decode. Like postcard::from_bytes,

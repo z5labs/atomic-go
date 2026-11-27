@@ -54,7 +54,11 @@ func (r *Reader) Err() error {
 	return r.err
 }
 
-// Offset returns the number of bytes decoded so far.
+// Offset returns the number of bytes read from the underlying reader so
+// far. Unlike a [Decoder], which rewinds to the start of a value that fails,
+// a Reader cannot give bytes back to its stream, so after a failure Offset
+// counts the bytes of the failed value it consumed too. The *[Error]'s
+// Offset is where that value begins, for both.
 func (r *Reader) Offset() int64 {
 	return r.off
 }
