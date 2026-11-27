@@ -6,8 +6,10 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -24,6 +26,25 @@ func (c *closeRecorder) Read(p []byte) (int, error) { return c.r.Read(p) }
 
 func (c *closeRecorder) Close() error {
 	c.closed = true
+	return nil
+}
+
+// opaqueBody is a request body of a type net/http cannot measure, so a
+// request carrying it has an unknown length. It records how many goroutines
+// were running each time it was read.
+type opaqueBody struct {
+	r          io.Reader
+	closed     bool
+	goroutines []int
+}
+
+func (o *opaqueBody) Read(p []byte) (int, error) {
+	o.goroutines = append(o.goroutines, runtime.NumGoroutine())
+	return o.r.Read(p)
+}
+
+func (o *opaqueBody) Close() error {
+	o.closed = true
 	return nil
 }
 
@@ -78,6 +99,73 @@ func TestTransport(t *testing.T) {
 		require.Equal(t, []string{"5"}, got.header.Values("Content-Length"))
 		require.Empty(t, got.header.Values("Transfer-Encoding"))
 		require.Equal(t, []byte("wants"), got.body)
+	})
+
+	t.Run("a GET with a body of unknown length is sent chunked without a probe", func(t *testing.T) {
+		var got served
+		var transferEncoding []string
+		client := remotetest.Client(recordingHandler(&got, func(_ http.ResponseWriter, r *http.Request) {
+			transferEncoding = r.TransferEncoding
+		}))
+
+		body := &opaqueBody{r: strings.NewReader("wants")}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://atomic.test/w/p/code", body)
+		require.NoError(t, err)
+		require.Zero(t, req.ContentLength)
+
+		before := runtime.NumGoroutine()
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.NotEmpty(t, body.goroutines)
+		for _, n := range body.goroutines {
+			require.Equal(t, before, n)
+		}
+		require.True(t, body.closed)
+		require.Equal(t, []string{"chunked"}, transferEncoding)
+		require.Equal(t, int64(-1), got.contentLength)
+		require.Equal(t, []byte("wants"), got.body)
+	})
+
+	t.Run("a GET with an empty body of unknown length is sent without one", func(t *testing.T) {
+		var got served
+		var transferEncoding []string
+		client := remotetest.Client(recordingHandler(&got, func(_ http.ResponseWriter, r *http.Request) {
+			transferEncoding = r.TransferEncoding
+		}))
+
+		body := &opaqueBody{r: strings.NewReader("")}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://atomic.test/", body)
+		require.NoError(t, err)
+
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.True(t, body.closed)
+		require.Empty(t, transferEncoding)
+		require.Zero(t, got.contentLength)
+		require.Empty(t, got.body)
+	})
+
+	t.Run("a HEAD keeps the handler's Content-Length without a body", func(t *testing.T) {
+		client := remotetest.Client(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.ServeContent(w, r, "f.txt", time.Time{}, strings.NewReader("hello world"))
+		}))
+
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodHead, "http://atomic.test/f.txt", nil)
+		require.NoError(t, err)
+
+		resp, err := client.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		require.Equal(t, int64(len("hello world")), resp.ContentLength)
+		b, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Empty(t, b)
 	})
 
 	t.Run("the status and repeated headers reach the caller", func(t *testing.T) {
@@ -182,6 +270,40 @@ func TestTransport(t *testing.T) {
 
 		resp, err := rt.RoundTrip(req)
 		require.ErrorIs(t, err, context.Canceled)
+		require.Nil(t, resp)
+		require.False(t, got.called)
+		require.True(t, body.closed)
+	})
+
+	t.Run("a context done while the handler runs returns its error", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		rt := remotetest.Transport(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			cancel()
+			_, _ = io.WriteString(w, "too late")
+		}))
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://atomic.test/", nil)
+		require.NoError(t, err)
+
+		resp, err := rt.RoundTrip(req)
+		require.ErrorIs(t, err, context.Canceled)
+		require.Nil(t, resp)
+	})
+
+	t.Run("a request that cannot be read back closes its body", func(t *testing.T) {
+		var got served
+		rt := remotetest.Transport(recordingHandler(&got, nil))
+
+		body := &closeRecorder{r: strings.NewReader("wants")}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://atomic.test/", body)
+		require.NoError(t, err)
+		// Request.Write writes the method verbatim, and a space in it leaves
+		// a request line http.ReadRequest cannot parse.
+		req.Method = "BAD METHOD"
+
+		resp, err := rt.RoundTrip(req)
+		require.Error(t, err)
 		require.Nil(t, resp)
 		require.False(t, got.called)
 		require.True(t, body.closed)

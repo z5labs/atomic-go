@@ -7,8 +7,9 @@
 // adapts a function into an [http.RoundTripper] for one-off fakes, and
 // [LogRecorder] is a [slog.Handler] that keeps every record it is given.
 //
-// Nothing in this package opens a socket, starts a goroutine or reads the
-// clock.
+// Transport opens no socket, starts no goroutine and reads no clock.
+// LogRecorder reads no clock either, but the records it keeps are stamped by
+// the [slog.Logger] that hands them over, as every logger's are.
 package remotetest
 
 import (
@@ -32,8 +33,16 @@ import (
 // through untouched in both directions; nothing is compressed or decompressed.
 //
 // A request whose context is already done returns the context's error
-// without calling h. The caller's request is never mutated, and its body is
-// closed on every path, as the [http.RoundTripper] contract requires.
+// without calling h, and one whose context is done by the time h returns
+// returns the context's error in place of h's response, as a client whose
+// deadline passed before the response arrived would. The caller's request is
+// never mutated, and its body is closed on every path, as the
+// [http.RoundTripper] contract requires.
+//
+// A body of unknown length on a method that usually has none, such as GET,
+// is read into memory before it is written. [http.Request.Write] would
+// otherwise probe it from a goroutine on a timer. It is then sent chunked, as
+// [http.Transport] sends it, or not at all when it is empty.
 func Transport(h http.Handler) http.RoundTripper {
 	return handlerTransport{handler: h}
 }
@@ -71,6 +80,10 @@ func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	out := req.Clone(ctx)
 	if body != nil {
 		out.Body = body
+		if err := bufferUnknownLength(out, body); err != nil {
+			body.close()
+			return nil, err
+		}
 	}
 
 	var wire bytes.Buffer
@@ -90,8 +103,14 @@ func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	rec := httptest.NewRecorder()
 	t.handler.ServeHTTP(rec, served)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	result := rec.Result()
+	// Response.Write needs the request to know that a response to HEAD
+	// carries a Content-Length but no body.
+	result.Request = served
 	if result.ContentLength < 0 {
 		// A handler that sets no Content-Length and writes a short body
 		// gets one from a real server, which buffers the body; without one
@@ -105,6 +124,42 @@ func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	return http.ReadResponse(bufio.NewReader(&wire), req)
+}
+
+// bufferUnknownLength reads into memory a body of unknown length on a method
+// that usually has none, which is where [http.Request.Write] would probe it
+// from a goroutine on a 200ms timer. A non-empty body is then marked chunked,
+// as the probe would have marked it, and an empty one is dropped, as the
+// probe would have dropped it.
+func bufferUnknownLength(out *http.Request, body *onceCloser) error {
+	if out.ContentLength > 0 || len(out.TransferEncoding) > 0 || !usuallyLacksBody(out.Method) {
+		return nil
+	}
+	b, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	body.close()
+	if len(b) == 0 {
+		out.Body = http.NoBody
+		out.ContentLength = 0
+		return nil
+	}
+	out.Body = io.NopCloser(bytes.NewReader(b))
+	out.ContentLength = -1
+	out.TransferEncoding = []string{"chunked"}
+	return nil
+}
+
+// usuallyLacksBody reports whether [http.Request.Write] probes a body of
+// unknown length sent with method, mirroring net/http's
+// requestMethodUsuallyLacksBody.
+func usuallyLacksBody(method string) bool {
+	switch method {
+	case "", http.MethodGet, http.MethodHead, http.MethodDelete, http.MethodOptions, "PROPFIND", "SEARCH":
+		return true
+	}
+	return false
 }
 
 // onceCloser passes reads through to its body and closes it at most once.
