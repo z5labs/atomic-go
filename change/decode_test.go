@@ -9,6 +9,7 @@ import (
 
 	"github.com/z5labs/atomic-go/change/graph"
 	"github.com/z5labs/atomic-go/change/provenance"
+	"github.com/z5labs/atomic-go/change/semantic"
 	"github.com/z5labs/atomic-go/change/span"
 	"github.com/z5labs/atomic-go/changefile"
 	"github.com/z5labs/atomic-go/ident"
@@ -478,6 +479,52 @@ func TestDecodeVersion1(t *testing.T) {
 		require.Equal(t, []ident.Hash{h2}, v.Change.Dependencies)
 	})
 
+	t.Run("the last PROVENANCE, SIGNATURE and UNHASHED win", func(t *testing.T) {
+		first := exampleSignature(t)
+		second := first
+		second.Timestamp++
+		firstPayload, err := first.AppendPayload(nil)
+		require.NoError(t, err)
+		secondPayload, err := second.AppendPayload(nil)
+		require.NoError(t, err)
+
+		// Eight sections, six more than a version 1 header frames.
+		b := buildFile(t, changefile.FileHeader{Version: changefile.Version1, ContentChunks: 6}, nil,
+			rawSection(changefile.SectionHeader, headerV1Payload(t, "m")),
+			rawSection(changefile.SectionDeps, []byte{0}),
+			rawSection(changefile.SectionProvenance, july2026Provenance()),
+			rawSection(changefile.SectionProvenance, []byte{0}),
+			rawSection(changefile.SectionSignature, firstPayload),
+			rawSection(changefile.SectionSignature, secondPayload),
+			rawSection(changefile.SectionUnhashed, []byte(`{"a":1}`)),
+			rawSection(changefile.SectionUnhashed, []byte(`{"b":2}`)),
+		)
+		v, err := Decode(b, newDecoder(t))
+		require.NoError(t, err)
+		require.Nil(t, v.Change.Provenance)
+		require.Equal(t, provenance.LayoutCurrent, v.Change.ProvenanceLayout)
+		require.NotNil(t, v.Change.Signature)
+		require.Equal(t, second, *v.Change.Signature)
+		require.Equal(t, json.RawMessage(`{"b":2}`), v.Change.Unhashed)
+	})
+
+	t.Run("SEMANTIC and CONTENT sections are concatenated", func(t *testing.T) {
+		a := []semantic.FileOps{{Trunk: semantic.TrunkID{FileIdx: 1}, Path: "a"}}
+		bOps := []semantic.FileOps{{Trunk: semantic.TrunkID{FileIdx: 2}, Path: "b"}}
+		b := buildFile(t, changefile.FileHeader{Version: changefile.Version1, ContentChunks: 4}, nil,
+			rawSection(changefile.SectionHeader, headerV1Payload(t, "m")),
+			rawSection(changefile.SectionDeps, []byte{0}),
+			rawSection(changefile.SectionSemantic, semanticPayload(t, a)),
+			rawSection(changefile.SectionSemantic, semanticPayload(t, bOps)),
+			rawSection(changefile.SectionContent, []byte("ab")),
+			rawSection(changefile.SectionContent, []byte("cd")),
+		)
+		v, err := Decode(b, newDecoder(t))
+		require.NoError(t, err)
+		require.Equal(t, append(a, bOps...), v.Change.Semantic)
+		require.Equal(t, []byte("abcd"), v.Change.Contents)
+	})
+
 	t.Run("a repeated section that fails is reported even if a later one would not", func(t *testing.T) {
 		b := buildFile(t, changefile.FileHeader{Version: changefile.Version1, ContentChunks: 1}, []ident.Hash{h1},
 			rawSection(changefile.SectionHeader, headerV1Payload(t, "m")),
@@ -501,6 +548,13 @@ func TestDecodeVersion1(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, []graph.Op{op1, op2}, v.Change.Graph)
 	})
+}
+
+func semanticPayload(t *testing.T, ops []semantic.FileOps) []byte {
+	t.Helper()
+	b, err := semantic.AppendPayload(nil, ops)
+	require.NoError(t, err)
+	return b
 }
 
 func graphPayload(t *testing.T, ops ...graph.Op) []byte {
@@ -609,6 +663,12 @@ func TestDecodeProvenanceOrder(t *testing.T) {
 		require.Equal(t, provenance.LayoutJuly2026, v.Change.ProvenanceLayout)
 		require.Len(t, v.Change.Provenance, 1)
 		require.Equal(t, "moonshotai", v.Change.Provenance[0].Model)
+	})
+
+	t.Run("an empty order decodes no PROVENANCE", func(t *testing.T) {
+		_, err := Decode(b, newDecoder(t), WithProvenanceOrder(nil))
+		requireFormatError(t, err, changefile.ErrPayload, changefile.SectionProvenance)
+		require.ErrorIs(t, err, provenance.ErrUnsupportedLayout)
 	})
 
 	t.Run("a payload no layout decodes", func(t *testing.T) {

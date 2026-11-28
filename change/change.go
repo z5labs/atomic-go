@@ -16,8 +16,9 @@ import (
 // typed form. [Decode] fills one from a change file; a Change is not tied
 // to the bytes it came from, which [Verified] keeps alongside it.
 //
-// Every list that is empty is nil, and every hash a payload names by hash
-// index is resolved through Table.
+// Every list that is empty is nil. The hash indices of the HEADER and DEPS
+// sections are resolved through Table to hashes; those of the GRAPH
+// operations are kept as indices, which Table resolves.
 type Change struct {
 	// Version is the change file's schema version. It decides which
 	// [Change.Validate] rules apply.

@@ -31,7 +31,10 @@ func WithReadOptions(opts ...changefile.ReadOption) DecodeOption {
 // as [provenance.Decode] takes them. Without it Decode uses
 // [provenance.FullReaderOrder], as Atomic's Change::deserialize does;
 // [provenance.SectionReaderOrder] reads the July 2026 layout instead
-// (docs/remote/change-format/sections.md#july-2026-misread).
+// (docs/remote/change-format/sections.md#july-2026-misread). An empty
+// order replaces the default too, and decodes no layout at all: a change
+// with a PROVENANCE section then fails to decode with an error wrapping
+// [provenance.ErrUnsupportedLayout].
 func WithProvenanceOrder(order []provenance.Layout) DecodeOption {
 	return func(o *decodeOptions) { o.provenanceOrder = slices.Clone(order) }
 }
