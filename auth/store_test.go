@@ -146,9 +146,8 @@ func TestResolveReturnsTheDirectorysError(t *testing.T) {
 
 func TestResolveForManagement(t *testing.T) {
 	human := entry(t, "aaron", 1)
-	agent := entry(t, "aaron+claude", 2)
-	agent.Identity.Type = identity.TypeDelegated
-	k := keyring(t, "aaron", human, agent)
+	work := entry(t, "aaron-work", 2)
+	k := keyring(t, "aaron", human, work)
 	ctx := context.Background()
 
 	got, ok, err := auth.ResolveForManagement(ctx, k, "")
@@ -156,10 +155,10 @@ func TestResolveForManagement(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "aaron", got.Name, "the default")
 
-	got, ok, err = auth.ResolveForManagement(ctx, k, "aaron+claude")
+	got, ok, err = auth.ResolveForManagement(ctx, k, "aaron-work")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, "aaron+claude", got.Name, "the profile's identity")
+	require.Equal(t, "aaron-work", got.Name, "the profile's human identity")
 
 	_, ok, err = auth.ResolveForManagement(ctx, k, "Aaron")
 	require.NoError(t, err)
@@ -229,11 +228,19 @@ func TestCheckPushCredentials(t *testing.T) {
 	})
 }
 
-// loaderFunc is a PushStore over a keyring's directory whose keys come from
-// load.
+// loaderFunc is a PushStore whose identities come from dir and whose keys
+// come from load.
 type loaderFunc struct {
-	*auth.Keyring
+	dir  auth.Directory
 	load func(ctx context.Context, id identity.ID) (identity.Signer, error)
+}
+
+func (l loaderFunc) Identities(ctx context.Context) ([]identity.Identity, error) {
+	return l.dir.Identities(ctx)
+}
+
+func (l loaderFunc) DefaultIdentity(ctx context.Context) (string, error) {
+	return l.dir.DefaultIdentity(ctx)
 }
 
 func (l loaderFunc) Signer(ctx context.Context, id identity.ID) (identity.Signer, error) {
@@ -260,6 +267,26 @@ func TestCheckPushCredentialsKeyLoader(t *testing.T) {
 		var ae *auth.AuthenticationError
 		require.ErrorAs(t, err, &ae)
 		require.Equal(t, auth.KeypairUnavailable, ae.Issue)
+	})
+
+	t.Run("a store error is a missing key, and is kept", func(t *testing.T) {
+		boom := errors.New("disk on fire")
+		store := loaderFunc{k, func(context.Context, identity.ID) (identity.Signer, error) { return nil, boom }}
+		err := auth.CheckPushCredentials(context.Background(), store, p, auth.Selection{})
+		var ae *auth.AuthenticationError
+		require.ErrorAs(t, err, &ae)
+		require.Equal(t, auth.KeypairUnavailable, ae.Issue)
+		require.ErrorIs(t, err, boom)
+	})
+
+	t.Run("a directory error is not an AuthenticationError", func(t *testing.T) {
+		boom := errors.New("boom")
+		store := loaderFunc{failingDirectory{boom}, func(context.Context, identity.ID) (identity.Signer, error) {
+			return nil, errors.New("not called")
+		}}
+		err := auth.CheckPushCredentials(context.Background(), store, p, auth.Selection{})
+		require.ErrorIs(t, err, boom)
+		require.NotErrorIs(t, err, auth.ErrAuthenticationFailed)
 	})
 
 	t.Run("a cancelled context is not a missing key", func(t *testing.T) {

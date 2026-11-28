@@ -119,11 +119,18 @@ func (e *AuthenticationError) Unwrap() error {
 // (docs/remote/auth.md#check_push_credentials).
 //
 // It passes when an identity resolves, as [Resolve] resolves it, and its
-// signing key loads from store and is the identity's own. It mints no token, checks no certificate and
-// sends no request. A failure is an [*AuthenticationError] whose Issue is
+// signing key loads from store and is the identity's own. It mints no token,
+// checks no certificate and sends no request.
+//
+// A failure is an [*AuthenticationError] whose Issue is
 // ExplicitIdentityNotFound when sel.Override matched nothing, NoIdentity
 // when nothing else resolved, and KeypairUnavailable when the key would not
-// load. Any other error is store's, or ctx's.
+// load. As in the Rust client, which asks only whether the key loaded, every
+// error from store's [KeyLoader] is KeypairUnavailable, whether or not it
+// wraps [ErrKeyUnavailable], and is kept as the AuthenticationError's Err;
+// the one exception is a done ctx, whose error is returned as it is. An
+// error from store's [Directory] is not an AuthenticationError: it is
+// returned wrapped, as [Resolve] returns it.
 func CheckPushCredentials(ctx context.Context, store PushStore, p serverurl.Project, sel Selection) error {
 	choice := ChooseName(p, sel)
 	id, ok, err := resolveChoice(ctx, store, choice)

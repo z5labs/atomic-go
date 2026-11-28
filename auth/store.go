@@ -26,8 +26,10 @@ type Directory interface {
 // KeyLoader loads the signing key of an identity on this machine.
 type KeyLoader interface {
 	// Signer returns the signer for the identity whose id is id. A key
-	// that cannot be loaded, because it is missing, locked or unreadable,
-	// is an error wrapping [ErrKeyUnavailable].
+	// that is missing or cannot be unlocked should be an error wrapping
+	// [ErrKeyUnavailable], so that a caller can tell it from a failure of
+	// the store itself. [CheckPushCredentials] does not make that
+	// distinction: to it, any error means the key would not load.
 	Signer(ctx context.Context, id identity.ID) (identity.Signer, error)
 }
 
@@ -92,7 +94,10 @@ func Resolve(ctx context.Context, dir Directory, p serverurl.Project, sel Select
 //
 // It never uses a profile's agent identity, because only the human may
 // enroll, renew or revoke a delegation
-// (docs/remote/auth.md#choosing-an-identity). Unlike [Resolve], a
+// (docs/remote/auth.md#choosing-an-identity): pass the profile's
+// [Profile.Identity]. Like the Rust client, it does not check the Type of
+// the identity it finds; a server refuses a delegated identity's
+// management request itself. Unlike [Resolve], a
 // profileIdentity that matches nothing does not fall back to the default,
 // and is not matched without regard to case, as in the Rust client.
 //
