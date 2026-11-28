@@ -403,10 +403,12 @@ func TestPushStageErrors(t *testing.T) {
 	})
 }
 
+// TestPushEmptyChain checks that an empty chain sends nothing, rather than
+// an advertisement of every view on the remote.
 func TestPushEmptyChain(t *testing.T) {
 	srv := projecttest.NewServer()
 	res, err := syncflow.Push(t.Context(), newClient(t, srv), nil, sourceOf())
 	require.NoError(t, err)
-	require.Equal(t, []request{getCode}, requests(srv))
+	require.Empty(t, requests(srv))
 	require.Empty(t, res.Plan.Views)
 }

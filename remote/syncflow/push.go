@@ -177,6 +177,9 @@ type PushResult struct {
 //  6. Verify: advertise again, as in 1, and check the answer with
 //     [VerifyPush].
 //
+// An empty chain has nothing to push and sends nothing: advertising no
+// names would ask for every view on the remote.
+//
 // A failure at a network step is a *[StageError] naming it and wrapping
 // the cause, so [errors.Is] reaches the sentinels of a
 // [github.com/z5labs/atomic-go/remote.Error], such as remote.ErrConflict
@@ -193,12 +196,15 @@ func Push(ctx context.Context, r Remote, chain []LocalView, src PackSource, opts
 	for _, opt := range opts {
 		opt(&o)
 	}
+	var res PushResult
+	if len(chain) == 0 {
+		return res, nil
+	}
 	names := make([]string, len(chain))
 	for i, v := range chain {
 		names[i] = v.Name()
 	}
 
-	var res PushResult
 	adv, err := advertise(ctx, r, names)
 	if err != nil {
 		return res, &StageError{Stage: StageAdvertise, Err: err}
