@@ -130,7 +130,7 @@ func decodeTrunkOp(d *postcard.Decoder) TrunkOp {
 		return TrunkSetMode{Trunk: decodeTrunkID(d), Mode: graph.Mode(d.U16())}
 	case variantTrunkSetKind:
 		return TrunkSetKind{Trunk: decodeTrunkID(d), Kind: graph.InodeKind(d.Variant(inodeKindVariants))}
-	default:
+	case variantProjectedSpanEdit:
 		return ProjectedSpanEdit{
 			File: span.ExternalFile{
 				Owner:   d.Array32(),
@@ -138,6 +138,11 @@ func decodeTrunkOp(d *postcard.Decoder) TrunkOp {
 			},
 			Baseline: span.ProjectionID(d.Array32()),
 		}
+	default:
+		// Unreachable while the variant count and the cases above agree; a
+		// variant admitted without a case fails rather than being misread.
+		d.Fail(postcard.ErrUnknownVariant)
+		return nil
 	}
 }
 
@@ -185,11 +190,16 @@ func decodeBranchOp(d *postcard.Decoder) BranchOp {
 		}
 	case variantBranchRestore:
 		return BranchRestore{Branch: decodeBranchID(d)}
-	default:
+	case variantBranchReparent:
 		return BranchReparent{
 			Branch:   decodeBranchID(d),
 			NewAfter: postcard.Option(d, decodeBranchID),
 		}
+	default:
+		// Unreachable while the variant count and the cases above agree; a
+		// variant admitted without a case fails rather than being misread.
+		d.Fail(postcard.ErrUnknownVariant)
+		return nil
 	}
 }
 
@@ -218,8 +228,13 @@ func decodeLeafOp(d *postcard.Decoder) LeafOp {
 			Leaf:       decodeLeafID(d),
 			NewContent: cloneBytes(d.ByteSeq()),
 		}
-	default:
+	case variantLeafRestore:
 		return LeafRestore{Leaf: decodeLeafID(d)}
+	default:
+		// Unreachable while the variant count and the cases above agree; a
+		// variant admitted without a case fails rather than being misread.
+		d.Fail(postcard.ErrUnknownVariant)
+		return nil
 	}
 }
 

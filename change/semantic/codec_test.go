@@ -201,6 +201,37 @@ func TestRoundTrip_TrunkOps(t *testing.T) {
 	}
 }
 
+// Every Encoding and InodeKind Atomic declares round-trips, and the byte
+// written is its variant index.
+func TestRoundTrip_EncodingsAndInodeKinds(t *testing.T) {
+	for enc := graph.Utf8; enc <= graph.Binary; enc++ {
+		t.Run(enc.String(), func(t *testing.T) {
+			in := fileWith(TrunkCreate{Path: "f", Encoding: ptr(enc)})
+			b, err := AppendPayload(nil, in)
+			require.NoError(t, err)
+			// ... Some(Create), path "f", Some(enc), no line ops.
+			require.Equal(t, []byte{0x01, 0x00, 0x01, 'f', 0x01, byte(enc), 0x00}, b[len(b)-7:])
+
+			out, err := Decode(b)
+			require.NoError(t, err)
+			require.Equal(t, in, out)
+		})
+	}
+	for kind := graph.Regular; kind <= graph.Gitlink; kind++ {
+		t.Run(kind.String(), func(t *testing.T) {
+			in := fileWith(TrunkSetKind{Trunk: TrunkID{Change: 1, FileIdx: 2}, Kind: kind})
+			b, err := AppendPayload(nil, in)
+			require.NoError(t, err)
+			// ... Some(SetKind), trunk {1, 2}, kind, no line ops.
+			require.Equal(t, []byte{0x01, 0x05, 0x01, 0x02, byte(kind), 0x00}, b[len(b)-6:])
+
+			out, err := Decode(b)
+			require.NoError(t, err)
+			require.Equal(t, in, out)
+		})
+	}
+}
+
 func TestRoundTrip_TrunkOpBytes(t *testing.T) {
 	b, err := AppendPayload(nil, fileWith(TrunkSetMode{Trunk: TrunkID{Change: 300, FileIdx: 2}, Mode: 0o755}))
 	require.NoError(t, err)
