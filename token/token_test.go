@@ -184,6 +184,9 @@ func TestSignRefusesArguments(t *testing.T) {
 		{"no delegation", s, func(p *token.Params) {
 			p.OnBehalfOf = &token.OnBehalfOf{Delegator: s.PublicKey()}
 		}},
+		{"zero delegator", s, func(p *token.Params) {
+			p.OnBehalfOf = &token.OnBehalfOf{Delegation: exampleDelegation}
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -200,18 +203,31 @@ func TestSignDoneContext(t *testing.T) {
 	cancel()
 	_, err := token.Sign(ctx, signerFromByte(t, 7), exampleParams())
 	require.ErrorIs(t, err, context.Canceled)
+
+	// Sign checks ctx itself, not only through the Signer.
+	s := signerFromByte(t, 7)
+	_, err = token.Sign(ctx, fixedSigner{s.PublicKey(), nil}, exampleParams())
+	require.ErrorIs(t, err, context.Canceled)
 }
 
-// badSigner returns a signature that does not verify.
-type badSigner struct{ identity.Signer }
-
-func (b badSigner) Sign(ctx context.Context, msg []byte) ([]byte, error) {
-	return make([]byte, identity.SignatureSize), nil
+// fixedSigner claims key and returns sig for every message.
+type fixedSigner struct {
+	key identity.PublicKey
+	sig []byte
 }
+
+func (f fixedSigner) PublicKey() identity.PublicKey { return f.key }
+
+func (f fixedSigner) Sign(context.Context, []byte) ([]byte, error) { return f.sig, nil }
 
 func TestSignChecksSignature(t *testing.T) {
-	_, err := token.Sign(context.Background(), badSigner{signerFromByte(t, 8)}, exampleParams())
+	key := signerFromByte(t, 8).PublicKey()
+
+	_, err := token.Sign(context.Background(), fixedSigner{key, make([]byte, identity.SignatureSize)}, exampleParams())
 	require.ErrorContains(t, err, "does not verify")
+
+	_, err = token.Sign(context.Background(), fixedSigner{key, make([]byte, identity.SignatureSize-1)}, exampleParams())
+	require.ErrorContains(t, err, "63 bytes")
 }
 
 func TestAudience(t *testing.T) {
@@ -226,6 +242,29 @@ func TestAudience(t *testing.T) {
 	for _, tt := range tests {
 		require.Equal(t, tt.want, token.Audience(tt.in), "Audience(%q)", tt.in)
 		require.Equal(t, tt.want, token.Audience(tt.want), "Audience(%q)", tt.want)
+	}
+
+	// One pass, as the reference client normalizes: whitespace among the
+	// trailing slashes survives it.
+	require.Equal(t, "https://x.test/ ", token.Audience("https://x.test/ /"))
+}
+
+func TestAudienceNormalizedOnce(t *testing.T) {
+	const server = "https://x.test/ /"
+	s := signerFromByte(t, 18)
+	m, err := token.NewMinter(s, server, fixedClock(exampleTime), rand.NewChaCha8([32]byte{4}))
+	require.NoError(t, err)
+	minted, err := m.Mint(context.Background())
+	require.NoError(t, err)
+
+	p := exampleParams()
+	p.Audience = server
+	signed, err := token.Sign(context.Background(), s, p)
+	require.NoError(t, err)
+
+	for _, tok := range []token.Token{minted, signed} {
+		require.Equal(t, token.Audience(server), tok.Claims().Aud)
+		require.NoError(t, tok.Verify(s.PublicKey(), server, exampleTime))
 	}
 }
 
@@ -382,6 +421,17 @@ func TestVerifyRefusals(t *testing.T) {
 			msg:  "aud",
 		},
 		{
+			name: "empty audience to verify against",
+			tok:  forge(t, priv, userHeader, `{"sub":"`+k+`","iat":1795512600,"exp":1795512900,"jti":"j"}`),
+			aud:  " / ",
+			msg:  "empty audience",
+		},
+		{
+			name: "no aud claim",
+			tok:  forge(t, priv, userHeader, `{"sub":"`+k+`","iat":1795512600,"exp":1795512900,"jti":"j"}`),
+			msg:  "aud",
+		},
+		{
 			name: "issued in the future",
 			tok:  user,
 			now:  exampleTime.Add(-time.Nanosecond),
@@ -437,7 +487,7 @@ func TestNewMinterRequiresArguments(t *testing.T) {
 
 	_, err = token.NewMinter(nil, " ", nil, nil, nil, token.WithOnBehalfOf(token.OnBehalfOf{}))
 	require.ErrorIs(t, err, token.ErrInvalidArgument)
-	for _, want := range []string{"Signer", "audience", "clock", "random", "nil MinterOption", "Delegation"} {
+	for _, want := range []string{"Signer", "audience", "clock", "random", "nil MinterOption", "zero Delegator", "no Delegation"} {
 		require.ErrorContains(t, err, want)
 	}
 }

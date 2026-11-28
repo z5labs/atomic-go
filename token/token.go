@@ -49,7 +49,8 @@ const lifetimeSeconds = int64(Lifetime / time.Second)
 
 var (
 	// ErrMalformed is wrapped by every error [Parse] returns for text that
-	// is not a compact EdDSA JWT.
+	// is not a well-formed compact JWT. Parse does not check alg or any
+	// other claim's value; that is [Token.Verify]'s job.
 	ErrMalformed = errors.New("token: malformed token")
 
 	// ErrRejected is wrapped by every error [Token.Verify] returns for a
@@ -108,8 +109,13 @@ type Actor struct {
 // Audience returns the aud claim for a token minted for server: server with
 // surrounding whitespace and every trailing slash removed, then lowercased
 // in full, path included, with only the ASCII letters changed. So
-// " https://Atomic.Storage/ " gives "https://atomic.storage". Audience of
-// its own result returns it unchanged.
+// " https://Atomic.Storage/ " gives "https://atomic.storage".
+//
+// It is one pass, exactly as the reference client normalizes, so it is not
+// idempotent for whitespace among the trailing slashes: "https://x.test/ /"
+// gives "https://x.test/ ". [Sign], [NewMinter] and [Token.Verify] each
+// normalize the server URL they are given exactly once, so give them all
+// the same URL.
 func Audience(server string) string {
 	s := strings.TrimRight(strings.TrimSpace(server), "/")
 	b := []byte(s)
@@ -125,18 +131,29 @@ func Audience(server string) string {
 // key moves to act.sub, and dlg is Delegation.
 type OnBehalfOf struct {
 	// Delegator is the key of the identity the agent acts for, as read from
-	// the certificate's delegatorKey.
+	// the certificate's delegatorKey. It must not be the zero key.
 	Delegator identity.PublicKey
 	// Delegation is the certificate's id as a URN, such as
 	// "urn:atomic:delegation:…". It must not be empty.
 	Delegation string
 }
 
+// check refuses an o that cannot make a delegated token, naming it as what.
+func (o OnBehalfOf) check(what string) error {
+	var errs []error
+	if o.Delegator == (identity.PublicKey{}) {
+		errs = append(errs, fmt.Errorf("%w: %s has a zero Delegator", ErrInvalidArgument, what))
+	}
+	if o.Delegation == "" {
+		errs = append(errs, fmt.Errorf("%w: %s has no Delegation", ErrInvalidArgument, what))
+	}
+	return errors.Join(errs...)
+}
+
 // Params is everything [Sign] writes into a token besides the signer's key.
 type Params struct {
-	// Audience is the server the token is for. Sign writes it through
-	// [Audience], so either the server URL or its normalized form will do.
-	// It must not be empty.
+	// Audience is the server URL the token is for. Sign writes [Audience]
+	// of it, which must not be empty.
 	Audience string
 	// IssuedAt is the issue time. Its fraction of a second is dropped. It
 	// must not be the zero time.
@@ -200,11 +217,15 @@ func (t Token) String() string {
 //     [Lifetime].
 //   - jti is p.ID and aud is [Audience] of p.Audience.
 //
-// A nil s, an empty audience, a zero IssuedAt or ID, or an OnBehalfOf with
-// no Delegation is an error wrapping [ErrInvalidArgument]. An error from s
-// is returned wrapped, and so is a signature that is not
+// Sign returns ctx.Err() when ctx is done before it signs. A nil s, an
+// empty audience, a zero IssuedAt or ID, or an OnBehalfOf with a zero
+// Delegator or no Delegation is an error wrapping [ErrInvalidArgument]. An
+// error from s is returned wrapped, and so is a signature that is not
 // [identity.SignatureSize] bytes or does not verify against s's key.
 func Sign(ctx context.Context, s identity.Signer, p Params) (Token, error) {
+	if err := ctx.Err(); err != nil {
+		return Token{}, err
+	}
 	if s == nil {
 		return Token{}, fmt.Errorf("%w: nil Signer", ErrInvalidArgument)
 	}
@@ -218,8 +239,10 @@ func Sign(ctx context.Context, s identity.Signer, p Params) (Token, error) {
 	if p.ID == (uuid.UUID{}) {
 		return Token{}, fmt.Errorf("%w: zero token id", ErrInvalidArgument)
 	}
-	if p.OnBehalfOf != nil && p.OnBehalfOf.Delegation == "" {
-		return Token{}, fmt.Errorf("%w: OnBehalfOf has no Delegation", ErrInvalidArgument)
+	if p.OnBehalfOf != nil {
+		if err := p.OnBehalfOf.check("OnBehalfOf"); err != nil {
+			return Token{}, err
+		}
 	}
 
 	key := s.PublicKey()
@@ -330,7 +353,7 @@ func decodeSegment(name, seg string, v any) error {
 //   - kid is key;
 //   - kid is act.sub when act is present, and sub otherwise;
 //   - dlg is present exactly when act is;
-//   - aud is [Audience] of audience;
+//   - aud is [Audience] of audience, and neither is empty;
 //   - iat ≤ now < exp, with now in Unix seconds and no leeway either way;
 //   - the signature is key's Ed25519 signature of the first two segments.
 //
@@ -355,7 +378,11 @@ func (t Token) Verify(key identity.PublicKey, audience string, now time.Time) er
 	if (c.Act != nil) != (c.Dlg != "") {
 		return fmt.Errorf("%w: act and dlg must be present together", ErrRejected)
 	}
-	if aud := Audience(audience); c.Aud != aud {
+	aud := Audience(audience)
+	if aud == "" {
+		return fmt.Errorf("%w: empty audience to verify against", ErrRejected)
+	}
+	if c.Aud != aud {
 		return fmt.Errorf("%w: aud is %q, want %q", ErrRejected, c.Aud, aud)
 	}
 	sec := now.Unix()
@@ -393,12 +420,12 @@ type minterConfig struct {
 }
 
 // WithOnBehalfOf makes every token the Minter mints delegated, as
-// [Params.OnBehalfOf] describes. An o with no Delegation makes [NewMinter]
-// fail.
+// [Params.OnBehalfOf] describes. An o with a zero Delegator or no
+// Delegation makes [NewMinter] fail.
 func WithOnBehalfOf(o OnBehalfOf) MinterOption {
 	return func(c *minterConfig) {
-		if o.Delegation == "" {
-			c.errs = append(c.errs, fmt.Errorf("%w: WithOnBehalfOf has no Delegation", ErrInvalidArgument))
+		if err := o.check("WithOnBehalfOf"); err != nil {
+			c.errs = append(c.errs, err)
 			return
 		}
 		c.onBehalfOf = &o
@@ -419,7 +446,7 @@ type Minter struct {
 }
 
 // NewMinter returns a Minter whose tokens are signed by s, for the server
-// audience, issued at the instant clock returns and given ids from random.
+// URL audience, which each token's aud is [Audience] of, issued at the instant clock returns and given ids from random.
 //
 // Every argument is required, and nothing falls back to a default: NewMinter
 // refuses a nil s, an audience that [Audience] makes empty, a nil clock and
@@ -434,8 +461,7 @@ func NewMinter(s identity.Signer, audience string, clock func() time.Time, rando
 	if s == nil {
 		missing("the Signer")
 	}
-	aud := Audience(audience)
-	if aud == "" {
+	if Audience(audience) == "" {
 		missing("the audience")
 	}
 	if clock == nil {
@@ -459,7 +485,7 @@ func NewMinter(s identity.Signer, audience string, clock func() time.Time, rando
 	}
 	return &Minter{
 		signer:     s,
-		audience:   aud,
+		audience:   audience,
 		clock:      clock,
 		onBehalfOf: cfg.onBehalfOf,
 		random:     random,
