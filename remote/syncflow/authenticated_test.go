@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -269,6 +270,9 @@ func TestAuthenticatedPush(t *testing.T) {
 		_, err = syncflow.Push(t.Context(), c, devChain(), sourceOf("c1", "c2"))
 		require.ErrorIs(t, err, remote.ErrUnauthorized)
 		require.Empty(t, srv.Requests())
+		refused := gate.Refused()
+		require.Len(t, refused, 1)
+		require.ErrorContains(t, refused[0], "kid "+user.PublicKey().String()+" is not a registered key")
 	})
 }
 
@@ -317,8 +321,11 @@ func (changeFiles) Tags(context.Context, string) ([]tags.Record, error) {
 // audience at the gate's clock, as docs/remote/auth.md describes under
 // What the server is expected to check. A delegated token must also come
 // with the Atomic-Delegation certificate it names, verified against the
-// delegator's registered key, issued to the token's signer and not expired.
-// Any other request is answered 401 and goes no further.
+// delegator's registered key, issued to the token's signer, valid at the
+// gate's clock, and scoped to allow the request on the gate's audience:
+// read for a GET or HEAD, push for anything else. The scope's workspace,
+// project and view lists are not checked. Any other request is answered 401
+// and goes no further.
 type bearerGate struct {
 	next     http.Handler
 	audience string
@@ -401,10 +408,10 @@ func (g *bearerGate) check(r *http.Request) (acceptedRequest, error) {
 	}
 	cert, err := delegation.DecodeHeader(a.Delegation)
 	if err != nil {
-		return acceptedRequest{}, err
+		return acceptedRequest{}, fmt.Errorf("reading the %s header: %w", delegation.HeaderName, err)
 	}
 	if err := cert.Verify(delegator); err != nil {
-		return acceptedRequest{}, err
+		return acceptedRequest{}, fmt.Errorf("the certificate does not verify against the delegator: %w", err)
 	}
 	if cert.ID().URN() != claims.Dlg {
 		return acceptedRequest{}, fmt.Errorf("the token names certificate %s, not %s", claims.Dlg, cert.ID().URN())
@@ -415,7 +422,24 @@ func (g *bearerGate) check(r *http.Request) (acceptedRequest, error) {
 	if cert.Expired(now) {
 		return acceptedRequest{}, fmt.Errorf("certificate %s has expired", cert.ID())
 	}
+	if issued := cert.AgentDelegation().Issued; now.Before(issued) {
+		return acceptedRequest{}, fmt.Errorf("certificate %s is not valid until %s", cert.ID(), issued.Format(time.RFC3339))
+	}
+	perm := permissionFor(r.Method)
+	if !cert.Allows(perm, delegation.ResourceRef{Server: g.audience}, now) {
+		return acceptedRequest{}, fmt.Errorf("certificate %s does not allow %s on %s", cert.ID(), perm, g.audience)
+	}
 	return a, nil
+}
+
+// permissionFor returns the permission a delegated request with method
+// needs: read for a GET or HEAD, which advertise and pull, and push for
+// anything else.
+func permissionFor(method string) delegation.Permission {
+	if method == http.MethodGet || method == http.MethodHead {
+		return delegation.PermissionRead
+	}
+	return delegation.PermissionPush
 }
 
 // Accepted returns the requests the gate passed on, in the order it saw
@@ -431,4 +455,205 @@ func (g *bearerGate) Refused() []error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]error(nil), g.refused...)
+}
+
+// TestBearerGateRefusesBadDelegations sends delegated requests straight to a
+// bearerGate, each broken in one way, so that every check the gate makes on a
+// delegation is shown to refuse.
+func TestBearerGateRefusesBadDelegations(t *testing.T) {
+	user := seededSigner(t, 1)
+	agent := seededSigner(t, 2)
+	mallory := seededSigner(t, 3)
+	other := seededSigner(t, 4)
+
+	proj, _, err := serverurl.ParseProject(authProjectURL)
+	require.NoError(t, err)
+	audience := auth.ProjectAudience(proj)
+
+	// issue returns delegator's certificate for delegate, valid from issued
+	// to expires on servers, granting perms.
+	issue := func(t *testing.T, delegator identity.Signer, delegate identity.PublicKey, issued, expires time.Time, servers []string, perms ...delegation.Permission) delegation.Certificate {
+		t.Helper()
+		scope := delegation.NewScope(perms...)
+		scope.Servers = servers
+		c, err := delegation.Issue(t.Context(), delegator, delegation.Grant{
+			DelegatorName: "alice",
+			DelegateKey:   delegate,
+			DelegateName:  "alice-claude",
+			Issued:        issued,
+			Expires:       expires,
+			Scope:         scope,
+		})
+		require.NoError(t, err)
+		return c
+	}
+	here := []string{audience}
+	readPush := []delegation.Permission{delegation.PermissionRead, delegation.PermissionPush}
+	cert := issue(t, user, agent.PublicKey(), authStart.Add(-time.Hour), authStart.Add(time.Hour), here, readPush...)
+
+	// signed returns a method request to the project carrying the token
+	// and certificate of agent's Bearer for c, minted at authStart.
+	signed := func(t *testing.T, method string, c delegation.Certificate) *http.Request {
+		t.Helper()
+		b, err := auth.NewBearer(agent, audience, func() time.Time { return authStart }, rand.NewChaCha8([32]byte{9}), auth.WithCertificate(c))
+		require.NoError(t, err)
+		req := httptest.NewRequest(method, authProjectURL, nil)
+		require.NoError(t, b.Attach(req))
+		return req
+	}
+
+	testCases := []struct {
+		name string
+		// request builds the request to send.
+		request func(t *testing.T) *http.Request
+		// registered are the keys the gate knows; nil means user and
+		// agent. now is the gate's clock; zero means authStart.
+		registered []identity.PublicKey
+		now        time.Time
+		// refusal is a substring of the gate's error, or "" for a
+		// request the gate must pass on.
+		refusal string
+	}{
+		{
+			name:    "a valid delegation passes",
+			request: func(t *testing.T) *http.Request { return signed(t, http.MethodPost, cert) },
+		},
+		{
+			name:       "the delegator is not registered",
+			request:    func(t *testing.T) *http.Request { return signed(t, http.MethodGet, cert) },
+			registered: []identity.PublicKey{agent.PublicKey()},
+			refusal:    "delegator " + user.PublicKey().String() + " is not a registered key",
+		},
+		{
+			name: "no certificate",
+			request: func(t *testing.T) *http.Request {
+				req := signed(t, http.MethodGet, cert)
+				req.Header.Del(delegation.HeaderName)
+				return req
+			},
+			refusal: "reading the Atomic-Delegation header",
+		},
+		{
+			name: "a garbled certificate",
+			request: func(t *testing.T) *http.Request {
+				req := signed(t, http.MethodGet, cert)
+				req.Header.Set(delegation.HeaderName, "not+base64url/")
+				return req
+			},
+			refusal: "reading the Atomic-Delegation header",
+		},
+		{
+			name: "a certificate the delegator did not sign",
+			request: func(t *testing.T) *http.Request {
+				req := signed(t, http.MethodGet, cert)
+				forged := issue(t, mallory, agent.PublicKey(), authStart.Add(-time.Hour), authStart.Add(time.Hour), here, readPush...)
+				req.Header.Set(delegation.HeaderName, forged.HeaderValue())
+				return req
+			},
+			refusal: "does not verify against the delegator",
+		},
+		{
+			name: "the token names another certificate",
+			request: func(t *testing.T) *http.Request {
+				req := signed(t, http.MethodGet, cert)
+				another := issue(t, user, agent.PublicKey(), authStart.Add(-2*time.Hour), authStart.Add(time.Hour), here, readPush...)
+				req.Header.Set(delegation.HeaderName, another.HeaderValue())
+				return req
+			},
+			refusal: "the token names certificate " + cert.ID().URN(),
+		},
+		{
+			name: "a certificate issued to another agent",
+			request: func(t *testing.T) *http.Request {
+				// auth.NewBearer refuses this pairing, so the token is
+				// signed by hand: agent's token, naming a certificate
+				// user issued to other.
+				theirs := issue(t, user, other.PublicKey(), authStart.Add(-time.Hour), authStart.Add(time.Hour), here, readPush...)
+				id, err := token.NewID(rand.NewChaCha8([32]byte{10}))
+				require.NoError(t, err)
+				tok, err := token.Sign(t.Context(), agent, token.Params{
+					Audience:   audience,
+					IssuedAt:   authStart,
+					ID:         id,
+					OnBehalfOf: &token.OnBehalfOf{Delegator: user.PublicKey(), Delegation: theirs.ID().URN()},
+				})
+				require.NoError(t, err)
+				req := httptest.NewRequest(http.MethodGet, authProjectURL, nil)
+				req.Header.Set("Authorization", "Bearer "+tok.String())
+				req.Header.Set(delegation.HeaderName, theirs.HeaderValue())
+				return req
+			},
+			refusal: "is not issued to " + agent.PublicKey().String(),
+		},
+		{
+			name: "an expired certificate",
+			request: func(t *testing.T) *http.Request {
+				brief := issue(t, user, agent.PublicKey(), authStart.Add(-time.Hour), authStart.Add(30*time.Second), here, readPush...)
+				return signed(t, http.MethodGet, brief)
+			},
+			// The token, minted at authStart, is still within its
+			// lifetime; only the certificate has run out.
+			now:     authStart.Add(time.Minute),
+			refusal: "has expired",
+		},
+		{
+			name: "a certificate not yet issued",
+			request: func(t *testing.T) *http.Request {
+				early := issue(t, user, agent.PublicKey(), authStart.Add(time.Hour), authStart.Add(2*time.Hour), here, readPush...)
+				return signed(t, http.MethodGet, early)
+			},
+			refusal: "is not valid until",
+		},
+		{
+			name: "a read-only certificate pushing",
+			request: func(t *testing.T) *http.Request {
+				readOnly := issue(t, user, agent.PublicKey(), authStart.Add(-time.Hour), authStart.Add(time.Hour), here, delegation.PermissionRead)
+				return signed(t, http.MethodPost, readOnly)
+			},
+			refusal: "does not allow push",
+		},
+		{
+			name: "a certificate for another server",
+			request: func(t *testing.T) *http.Request {
+				elsewhere := issue(t, user, agent.PublicKey(), authStart.Add(-time.Hour), authStart.Add(time.Hour), []string{"https://atomic.storage"}, readPush...)
+				return signed(t, http.MethodGet, elsewhere)
+			},
+			refusal: "does not allow read",
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			registered := tc.registered
+			if registered == nil {
+				registered = []identity.PublicKey{user.PublicKey(), agent.PublicKey()}
+			}
+			now := tc.now
+			if now.IsZero() {
+				now = authStart
+			}
+			served := 0
+			next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				served++
+				w.WriteHeader(http.StatusNoContent)
+			})
+			gate := newBearerGate(next, audience, func() time.Time { return now }, registered...)
+
+			rec := httptest.NewRecorder()
+			gate.ServeHTTP(rec, tc.request(t))
+
+			if tc.refusal == "" {
+				require.Empty(t, gate.Refused())
+				require.Equal(t, http.StatusNoContent, rec.Code)
+				require.Equal(t, 1, served)
+				require.Len(t, gate.Accepted(), 1)
+				return
+			}
+			require.Equal(t, http.StatusUnauthorized, rec.Code)
+			require.Zero(t, served)
+			require.Empty(t, gate.Accepted())
+			refused := gate.Refused()
+			require.Len(t, refused, 1)
+			require.ErrorContains(t, refused[0], tc.refusal)
+		})
+	}
 }
