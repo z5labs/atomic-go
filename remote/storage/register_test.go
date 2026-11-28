@@ -167,6 +167,7 @@ func TestRegisterTrimsTrailingSlashes(t *testing.T) {
 		"https://h//":       "/register",
 		"https://h/base/":   "/base/register",
 		"http://h:8080/a/b": "/a/b/register",
+		"https://h/a%2Fb/":  "/a%2Fb/register",
 	} {
 		t.Run(server, func(t *testing.T) {
 			reg, _ := signedRegistration(t, "")
@@ -219,7 +220,7 @@ func TestRegisterKeepsOnlyStrings(t *testing.T) {
 		"string data":     {`{"data": "alice", "slug": "alice"}`, storage.RegisterResponse{}},
 		"array reply":     {`["alice"]`, storage.RegisterResponse{}},
 		"string reply":    {`"alice"`, storage.RegisterResponse{}},
-		"escaped strings": {`{"slug": "alice"}`, storage.RegisterResponse{Slug: ptr("alice")}},
+		"escaped strings": {`{"slug": "al\u0069ce"}`, storage.RegisterResponse{Slug: ptr("alice")}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg, _ := signedRegistration(t, "")
@@ -262,6 +263,9 @@ func TestRegisterErrorMessages(t *testing.T) {
 		"plain text":              {http.StatusInternalServerError, `internal error`, "Server returned 500 Internal Server Error"},
 		"empty body":              {http.StatusServiceUnavailable, ``, "Server returned 503 Service Unavailable"},
 		"unknown status":          {599, `{}`, "Server returned 599 <unknown status code>"},
+		"413 as Rust writes it":   {http.StatusRequestEntityTooLarge, `{}`, "Server returned 413 Payload Too Large"},
+		"414 as Rust writes it":   {http.StatusRequestURITooLong, `{}`, "Server returned 414 URI Too Long"},
+		"416 as Rust writes it":   {http.StatusRequestedRangeNotSatisfiable, `{}`, "Server returned 416 Range Not Satisfiable"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			reg, _ := signedRegistration(t, "")
@@ -337,13 +341,14 @@ func TestRegisterRefusesArgumentsBeforeSending(t *testing.T) {
 	})
 
 	for server, want := range map[string]string{
-		"atomic.storage":             "the server URL is not absolute",
-		"/register":                  "the server URL is not absolute",
-		"ftp://atomic.storage":       `the server URL has scheme "ftp", not http or https`,
-		"https://":                   "the server URL has no host",
-		"https://u:p@atomic.storage": "the server URL has userinfo",
-		"https://atomic.storage?x=1": "the server URL has a query",
-		"https://atomic.storage#f":   "the server URL has a fragment",
+		"atomic.storage":                "the server URL is not absolute",
+		"/register":                     "the server URL is not absolute",
+		"ftp://atomic.storage":          `the server URL has scheme "ftp", not http or https`,
+		"https://":                      "the server URL has no host",
+		"https://u:p@atomic.storage":    "the server URL has userinfo",
+		"https://atomic.storage?x=1":    "the server URL has a query",
+		"https://atomic.storage#f":      "the server URL has a fragment",
+		"https://atomic.storage/a/../b": "the server URL path",
 	} {
 		t.Run(server, func(t *testing.T) {
 			d := &countingDoer{}

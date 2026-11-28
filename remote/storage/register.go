@@ -64,11 +64,13 @@ func (r RegisterResponse) SingleTenant() bool {
 //
 // The request goes out as the Rust CLI sends it: through a plain client
 // rather than a [Client]'s pipeline, with Content-Type: application/json as
-// its only header. It sends no User-Agent, no Accept-Encoding and no
-// credentials, because the signature in reg is the credential, so d must not
-// add any: it must not be an [*http.Client] whose transport is an
-// auth.Transport. The response's minimum-version header is not checked and
-// nothing is logged.
+// the only header Register sets. It sets no User-Agent, so net/http sends
+// none, and no credentials, because the signature in reg is the credential,
+// so d must not add any: it must not be an [*http.Client] whose transport is
+// an auth.Transport. Whatever else d's transport adds is d's to decide; an
+// [http.Transport] adds Accept-Encoding: gzip and decodes the reply, as
+// reqwest does with its gzip feature. The response's minimum-version header
+// is not checked and nothing is logged.
 //
 // Trailing '/' characters are removed from server's path, so
 // "https://atomic.storage/" posts to https://atomic.storage/register. server
@@ -184,8 +186,8 @@ func registerURL(d Doer, server *url.URL) (*url.URL, error) {
 		return nil, fmt.Errorf("storage: Register: %w", errors.Join(errs...))
 	}
 	u := *trimmed
-	u.Path += "/register"
-	u.RawPath += "/register"
+	u.RawPath = trimmed.EscapedPath() + "/register"
+	u.Path = trimmed.Path + "/register"
 	return &u, nil
 }
 
@@ -221,11 +223,25 @@ func registerErrorMessage(status int, body []byte) string {
 			return m
 		}
 	}
-	reason := http.StatusText(status)
-	if reason == "" {
-		reason = "<unknown status code>"
+	return "Server returned " + strconv.Itoa(status) + " " + reasonPhrase(status)
+}
+
+// reasonPhrase returns the reason phrase the Rust http crate gives status:
+// net/http's, except for the codes whose phrase the crate writes
+// differently, and "<unknown status code>" for a code with none.
+func reasonPhrase(status int) string {
+	switch status {
+	case http.StatusRequestEntityTooLarge:
+		return "Payload Too Large"
+	case http.StatusRequestURITooLong:
+		return "URI Too Long"
+	case http.StatusRequestedRangeNotSatisfiable:
+		return "Range Not Satisfiable"
 	}
-	return "Server returned " + strconv.Itoa(status) + " " + reason
+	if reason := http.StatusText(status); reason != "" {
+		return reason
+	}
+	return "<unknown status code>"
 }
 
 // registerProtocolError is the [remote.KindProtocol] for a 2xx registration
