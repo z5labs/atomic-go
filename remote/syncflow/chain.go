@@ -52,16 +52,16 @@ func VerifyFold() ResolveOption {
 // root first, the order its views are applied in, and leaf is last.
 //
 // Each view's ref is found by name and its snapshot by the ref's NewTarget,
-// among the pack's View objects; one that does not decode as a snapshot is
-// skipped, as if the pack did not carry it. A ref named twice keeps its
-// last target.
+// among the pack's View objects; one that does not decode as a snapshot, or
+// whose bytes do not have its key by [VerifyKey], is skipped, as if the
+// pack did not carry it. A ref named twice keeps its last target.
 //
 // It fails, returning no chain:
 //
 //   - with an error wrapping [ErrViewNotInPack] when the pack has no ref
 //     for leaf or an ancestor, or no snapshot for one's target. When the
-//     pack carries a View object under that target that does not decode,
-//     the error wraps its decode failure as well;
+//     pack carries a View object under that target that was skipped, the
+//     error wraps why as well: its decode failure, or [ErrKeyMismatch];
 //   - with an error wrapping [ErrViewCycle] when the chain reaches a view
 //     it has already passed through;
 //   - with an error wrapping the *[views.ManifestError] when a snapshot's
@@ -126,6 +126,10 @@ func ResolveChain(pack syncproto.Pack, leaf string, opts ...ResolveOption) ([]Ch
 }
 
 // setIDMismatch reports whether declared is not the base32 SetId of log.
+// log is the snapshot's whole own_changes, inherited prefix included for a
+// draft: Atomic's producers fold own_set_id from the same list they copy
+// into own_changes, and its pull and clone compare against that fold; see
+// ViewSnapshot in docs/remote/endpoints/project.md.
 func setIDMismatch(declared string, log []ident.Hash) bool {
 	id, err := ident.ParseSetID(declared)
 	return err != nil || id != ident.SetIDOf(log)

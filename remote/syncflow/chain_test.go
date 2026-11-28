@@ -159,6 +159,7 @@ func TestResolveChainSetIDMismatch(t *testing.T) {
 
 	chain, err := syncflow.ResolveChain(pack, "feature", syncflow.VerifyFold())
 	require.NoError(t, err)
+	require.Len(t, chain, 2)
 	require.False(t, chain[0].SetIDMismatch)
 	require.True(t, chain[1].SetIDMismatch)
 
@@ -169,6 +170,7 @@ func TestResolveChainSetIDMismatch(t *testing.T) {
 
 	chain, err = syncflow.ResolveChain(pack, "feature")
 	require.NoError(t, err)
+	require.Len(t, chain, 2)
 	require.True(t, chain[1].SetIDMismatch)
 }
 
@@ -248,5 +250,75 @@ func TestResolveChainKeepsTheLastRef(t *testing.T) {
 
 	chain, err := syncflow.ResolveChain(pack, "dev")
 	require.NoError(t, err)
+	require.Len(t, chain, 1)
 	require.Equal(t, dev.Key(), chain[0].Target)
+}
+
+func TestParseAdvertisementKeepsTheLastRef(t *testing.T) {
+	pack, dev, _ := devAndFeature()
+	bad := dev
+	bad.MerkleState = ident.Sum([]byte("not the fold")).String()
+	pack.Objects = append(pack.Objects, viewObject(bad))
+	// The superseded ref's snapshot is never read, so its bad fold does not
+	// fail the parse.
+	pack.Refs = append([]syncproto.RefRecord{ref("dev", bad)}, pack.Refs...)
+
+	ad, err := syncflow.ParseAdvertisement(pack)
+	require.NoError(t, err)
+	require.Equal(t, dev.Key(), ad["dev"].Target)
+	require.NotNil(t, ad["dev"].Manifest)
+}
+
+func TestImpostorSnapshotsAreSkipped(t *testing.T) {
+	pack, dev, _ := devAndFeature()
+	impostor := views.FromManifest(views.Manifest{Name: "dev", Scope: ident.ScopeShared, Changes: changes("c9")}, "")
+	misnamed := syncproto.ObjectRecord{Family: syncproto.View, Key: dev.Key(), Bytes: impostor.MarshalCanonical()}
+
+	t.Run("a genuine object under the same key still wins", func(t *testing.T) {
+		p := pack
+		p.Objects = append([]syncproto.ObjectRecord{misnamed}, pack.Objects...)
+
+		ad, err := syncflow.ParseAdvertisement(p)
+		require.NoError(t, err)
+		devM := devManifest()
+		require.Equal(t, &devM, ad["dev"].Manifest)
+
+		chain, err := syncflow.ResolveChain(p, "feature")
+		require.NoError(t, err)
+		require.Len(t, chain, 2)
+		require.Equal(t, dev, chain[0].Snapshot)
+	})
+
+	t.Run("alone it is not carried", func(t *testing.T) {
+		p := pack
+		p.Objects = []syncproto.ObjectRecord{misnamed, pack.Objects[2]}
+
+		ad, err := syncflow.ParseAdvertisement(p)
+		require.NoError(t, err)
+		require.Nil(t, ad["dev"].Manifest)
+
+		_, err = syncflow.ResolveChain(p, "feature")
+		require.ErrorIs(t, err, syncflow.ErrViewNotInPack)
+		require.ErrorIs(t, err, syncflow.ErrKeyMismatch)
+	})
+}
+
+func TestInvalidMerkleState(t *testing.T) {
+	pack, dev, _ := devAndFeature()
+	bad := dev
+	bad.MerkleState = "not base32!"
+	pack.Objects = append(pack.Objects, viewObject(bad))
+	pack.Refs[0] = ref("dev", bad)
+
+	_, err := syncflow.ParseAdvertisement(pack)
+	var me *views.ManifestError
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, views.ManifestInvalidState, me.Kind)
+
+	// The state is read even without VerifyFold, since the manifest holds
+	// it as a hash.
+	chain, err := syncflow.ResolveChain(pack, "feature")
+	require.Nil(t, chain)
+	require.ErrorAs(t, err, &me)
+	require.Equal(t, views.ManifestInvalidState, me.Kind)
 }

@@ -34,6 +34,13 @@ import (
 var (
 	// ErrKeyMismatch reports an object whose key is not the key its bytes
 	// have, including a key that does not parse as its family's key.
+	//
+	// Bytes that cannot be read at all are reported by their own error
+	// instead: a Change whose file [changefile.Verify] refuses, such as one
+	// whose trailer disagrees with its contents
+	// ([changefile.ErrHashMismatch]), or a Tag that does not decode
+	// ([tags.ErrMalformed]). Every non-nil [VerifyKey] error means the
+	// object must not be stored under its key.
 	ErrKeyMismatch = errors.New("syncflow: object key does not match its bytes")
 
 	// ErrUnverifiable reports an object whose family has no known key

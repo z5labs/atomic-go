@@ -28,13 +28,14 @@ type Advertisement map[string]RemoteView
 // ParseAdvertisement reads pack, the answer to a refs-only pull, as Atomic's
 // push reads its ref advertisement.
 //
-// Every ref becomes a [RemoteView], its Target the ref's NewTarget. When
+// Every ref becomes a [RemoteView], its Target the ref's NewTarget; a ref
+// named twice keeps its last target, and only that target is read. When
 // the pack carries a View object keyed by that target, its snapshot is read
 // back as a manifest under the ref's name with [views.Snapshot.Manifest]
 // and checked with [views.Manifest.Verify], and set as Manifest. When it
 // does not, Manifest is nil and Target is kept. View objects that do not
-// decode as a snapshot are skipped, as if the pack did not carry them; a
-// ref named twice keeps its last target.
+// decode as a snapshot, or whose bytes do not have their key by
+// [VerifyKey], are skipped, as if the pack did not carry them.
 //
 // A carried snapshot whose state is not base32, or whose declared state
 // disagrees with the fold of its log, ends the parse with an error wrapping
@@ -43,24 +44,29 @@ func ParseAdvertisement(pack syncproto.Pack) (Advertisement, error) {
 	snapshots, _ := indexSnapshots(pack)
 	ad := make(Advertisement, len(pack.Refs))
 	for _, ref := range pack.Refs {
-		rv := RemoteView{Name: ref.Name, Target: ref.NewTarget}
-		if s, ok := snapshots[ref.NewTarget]; ok {
-			m, err := s.Manifest(ref.Name)
-			if err == nil {
-				err = m.Verify()
-			}
-			if err != nil {
-				return nil, fmt.Errorf("syncflow: advertised view %q: %w", ref.Name, err)
-			}
-			rv.Manifest = &m
+		ad[ref.Name] = RemoteView{Name: ref.Name, Target: ref.NewTarget}
+	}
+	for name, rv := range ad {
+		s, ok := snapshots[rv.Target]
+		if !ok {
+			continue
 		}
-		ad[ref.Name] = rv
+		m, err := s.Manifest(name)
+		if err == nil {
+			err = m.Verify()
+		}
+		if err != nil {
+			return nil, fmt.Errorf("syncflow: advertised view %q: %w", name, err)
+		}
+		rv.Manifest = &m
+		ad[name] = rv
 	}
 	return ad, nil
 }
 
 // indexSnapshots decodes pack's View objects, returning those that decode
-// by key and, for each key with none that does, the first decode failure.
+// and have their key by [VerifyKey], by key, and, for each key with none
+// that does, the first failure.
 func indexSnapshots(pack syncproto.Pack) (map[string]views.Snapshot, map[string]error) {
 	snapshots := make(map[string]views.Snapshot)
 	failures := make(map[string]error)
@@ -72,6 +78,9 @@ func indexSnapshots(pack syncproto.Pack) (map[string]views.Snapshot, map[string]
 			continue
 		}
 		s, err := views.ParseSnapshot(obj.Bytes)
+		if err == nil {
+			err = VerifyKey(obj)
+		}
 		if err != nil {
 			if _, ok := failures[obj.Key]; !ok {
 				failures[obj.Key] = err
