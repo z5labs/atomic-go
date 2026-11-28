@@ -6,8 +6,11 @@
 // [Decode] reads a payload and [AppendPayload] writes one. Every field is
 // kept as written, the raw [EdgeFlags] bytes included, so a payload that
 // decodes is written back byte for byte, provided its varints are minimal,
-// as every writer's are. Hash indices are kept as indices: resolving them
-// against the file's hash table is the caller's.
+// as every writer's are. Hash indices are kept as indices. [Resolve] turns
+// one into the change it names in the file's hash table, [Check] runs the
+// checks Atomic makes once an op's indices are resolved, and [Indices] and
+// [Remap] list and renumber an op's indices for writing it against a new
+// table.
 //
 // The payload is documented in
 // docs/remote/change-format/graph.md#graph-section.
