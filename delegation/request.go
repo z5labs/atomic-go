@@ -313,8 +313,10 @@ func (r Request) Verify() error {
 // Grant reads the request as it stands and checks nothing. Call
 // [Request.Verify] first: countersigning a request that does not verify
 // would delegate to a key nobody has shown they hold. A request whose
-// delegateKey is not a did:key gives a Grant with the zero DelegateKey,
-// which [Issue] refuses.
+// delegateKey is not a did:key gives a Grant with the zero DelegateKey, and
+// one whose softwareAgent does not begin [SoftwareAgentPrefix] a Grant with
+// that softwareAgent, and [Issue] refuses both. Neither stops the request
+// verifying, since Atomic's verify_request checks neither.
 func (r Request) Grant(delegatorName string, issued, expires time.Time, scope Scope) Grant {
 	key, _ := r.view.DelegateKey.PublicKey()
 	return Grant{

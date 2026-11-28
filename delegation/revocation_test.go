@@ -211,6 +211,9 @@ func TestRevokeRefuses(t *testing.T) {
 	_, err := delegation.Revoke(ctx, nil, id, goldenRevokedAt(), "")
 	require.ErrorIs(t, err, delegation.ErrInvalidRevocation)
 
+	_, err = delegation.Revoke(ctx, human(t), delegation.ID{}, goldenRevokedAt(), "")
+	require.ErrorIs(t, err, delegation.ErrInvalidRevocation)
+
 	_, err = delegation.Revoke(ctx, human(t), id, time.Time{}, "")
 	require.ErrorIs(t, err, delegation.ErrInvalidRevocation)
 }

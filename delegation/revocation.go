@@ -105,12 +105,15 @@ type wireRevocation struct {
 //
 // Revoke verifies what it signed against signer's public key before
 // returning it, so a [identity.Signer] whose signatures are not its key's
-// is an error wrapping [ErrVerifyRevocation]. A nil signer and a zero
-// revokedAt are errors wrapping [ErrInvalidRevocation]. An error from
-// signer is returned wrapped.
+// is an error wrapping [ErrVerifyRevocation]. A nil signer, the zero id,
+// which names no certificate, and a zero revokedAt are errors wrapping
+// [ErrInvalidRevocation]. An error from signer is returned wrapped.
 func Revoke(ctx context.Context, signer identity.Signer, id ID, revokedAt time.Time, reason string) (Revocation, error) {
 	if signer == nil {
 		return Revocation{}, fmt.Errorf("%w: revoke: nil signer", ErrInvalidRevocation)
+	}
+	if id == (ID{}) {
+		return Revocation{}, fmt.Errorf("%w: revoke: id is the zero id", ErrInvalidRevocation)
 	}
 	if revokedAt.IsZero() {
 		return Revocation{}, fmt.Errorf("%w: revoke: revokedAt is the zero time", ErrInvalidRevocation)

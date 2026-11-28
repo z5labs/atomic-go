@@ -221,6 +221,8 @@ func TestParseRequestRefuses(t *testing.T) {
 		"no delegateName":            without("delegateName"),
 		"no proof":                   without("proof"),
 		"no requested":               without("requested"),
+		"@type not a string":         set("@type", 1),
+		"attributedTo not a string":  set("attributedTo", false),
 		"delegate not a DID":         set("delegate", "alice"),
 		"delegateKey not a DID":      set("delegateKey", "did:key:nope"),
 		"delegateName not a string":  set("delegateName", 1),
@@ -240,6 +242,17 @@ func TestParseRequestRefuses(t *testing.T) {
 		require.ErrorIs(t, err, delegation.ErrInvalidRequest)
 		require.ErrorIs(t, err, canonical.ErrNotAdmitted)
 	})
+}
+
+func TestRequestOptionalMembersMayBeNull(t *testing.T) {
+	d := requestWith(t, "softwareAgent", jsontext.Value("null"))
+	d, err := d.With("attributedTo", jsontext.Value("null"))
+	require.NoError(t, err)
+
+	r, err := delegation.RequestFromDocument(d)
+	require.NoError(t, err)
+	require.Empty(t, r.AgentDelegationRequest().SoftwareAgent)
+	require.Empty(t, r.AgentDelegationRequest().AttributedTo)
 }
 
 func TestRequestJSON(t *testing.T) {
@@ -296,5 +309,18 @@ func TestRequestGrantWithoutDIDKey(t *testing.T) {
 	grant := r.Grant("alice", goldenIssued(), time.Time{}, delegation.NewScope(delegation.PermissionRead))
 	require.Equal(t, identity.PublicKey{}, grant.DelegateKey)
 	_, err = delegation.Issue(context.Background(), human(t), grant)
+	require.ErrorIs(t, err, delegation.ErrInvalid)
+}
+
+func TestRequestGrantWithUnprefixedSoftwareAgent(t *testing.T) {
+	// Atomic's verify_request does not read softwareAgent, so a request
+	// whose softwareAgent Issue would refuse still verifies; the human finds
+	// out when Issue refuses the Grant.
+	r := attestRequest(t, requestWith(t, "softwareAgent", "claude-code"), agent(t))
+	require.NoError(t, r.Verify())
+
+	grant := r.Grant("alice", goldenIssued(), time.Time{}, delegation.NewScope(delegation.PermissionRead))
+	require.Equal(t, "claude-code", grant.SoftwareAgent)
+	_, err := delegation.Issue(context.Background(), human(t), grant)
 	require.ErrorIs(t, err, delegation.ErrInvalid)
 }
