@@ -213,7 +213,7 @@ func (c *Client) DownloadProvenance(ctx context.Context, hash string) ([]byte, e
 // then hash.
 func (c *Client) download(ctx context.Context, op, key, hash, notFound string) ([]byte, error) {
 	on404 := func(resp *wire.Response) error {
-		return response{op: op, resp: resp}.protocol(notFound+hash, nil)
+		return response{op: op, method: http.MethodGet, resp: resp}.protocol(notFound+hash, nil)
 	}
 	body, _, err := c.fetch(ctx, op, on404, func(q *wire.Query) error {
 		return q.Add(key, hash)
@@ -310,12 +310,13 @@ func (c *Client) ViewManifest(ctx context.Context, view string) (text string, ok
 	return "", false, body.protocol("server does not support view manifests (?view-manifest)", nil)
 }
 
-// response is a response whose body has been read, for the errors a read
-// makes from it.
+// response is a response whose body has been read, for the errors a
+// request makes from it.
 type response struct {
-	op   string
-	resp *wire.Response
-	data []byte
+	op     string
+	method string
+	resp   *wire.Response
+	data   []byte
 }
 
 // protocol returns the [remote.KindProtocol] with message msg and cause
@@ -324,7 +325,7 @@ func (r response) protocol(msg string, err error) *remote.Error {
 	return &remote.Error{
 		Kind:             remote.KindProtocol,
 		Op:               r.op,
-		Method:           http.MethodGet,
+		Method:           r.method,
 		URL:              r.resp.URL,
 		StatusCode:       r.resp.StatusCode,
 		Message:          msg,
@@ -360,7 +361,7 @@ func notFoundAs(kind remote.Kind, subject string) func(*wire.Response) error {
 // [remote.KindAuthenticationFailed] and any other status a
 // [remote.KindHTTP].
 func (c *Client) fetch(ctx context.Context, op string, on404 func(*wire.Response) error, build func(*wire.Query) error) (body response, found bool, err error) {
-	u, err := c.queryURL(op, build)
+	u, err := c.queryURL(op, http.MethodGet, build)
 	if err != nil {
 		return response{}, false, err
 	}
@@ -386,41 +387,53 @@ func (c *Client) fetch(ctx context.Context, op string, on404 func(*wire.Response
 		return response{}, false, wire.StatusError(op, resp, wire.ErrorBody(resp))
 	}
 
-	r := response{op: op, resp: resp}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, c.maxBody+1))
+	r, err := c.readBody(ctx, response{op: op, method: http.MethodGet, resp: resp})
+	if err != nil {
+		return response{}, false, err
+	}
+	return r, true, nil
+}
+
+// readBody reads the body of the success response r.resp into r.data. A
+// body that cannot be read is a [remote.KindConnectionFailed], and one
+// larger than the Client's limit, or a zstd Content-Encoding inflating past
+// it, is a [remote.KindProtocol].
+func (c *Client) readBody(ctx context.Context, r response) (response, error) {
+	data, err := io.ReadAll(io.LimitReader(r.resp.Body, c.maxBody+1))
 	if err != nil {
 		if errors.Is(err, zstdframe.ErrLimit) {
 			// A zstd Content-Encoding that inflated past the limit:
 			// reading again would fail the same way.
-			return response{}, false, r.protocol("failed to decode response body: "+err.Error(), err)
+			return response{}, r.protocol("failed to decode response body: "+err.Error(), err)
 		}
-		return response{}, false, &remote.Error{
+		return response{}, &remote.Error{
 			Kind:             remote.KindConnectionFailed,
-			Op:               op,
-			Method:           http.MethodGet,
-			URL:              resp.URL,
-			StatusCode:       resp.StatusCode,
-			ServerMinVersion: resp.MinVersion,
+			Op:               r.op,
+			Method:           r.method,
+			URL:              r.resp.URL,
+			StatusCode:       r.resp.StatusCode,
+			ServerMinVersion: r.resp.MinVersion,
 			ContextDone:      ctx.Err() != nil,
 			Err:              err,
 		}
 	}
 	if int64(len(data)) > c.maxBody {
-		return response{}, false, r.protocol("response body is larger than "+strconv.FormatInt(c.maxBody, 10)+" bytes", nil)
+		return response{}, r.protocol("response body is larger than "+strconv.FormatInt(c.maxBody, 10)+" bytes", nil)
 	}
 	r.data = data
-	return r, true, nil
+	return r, nil
 }
 
-// queryURL returns the project URL with the query build writes. A value
-// the query refuses is a [remote.KindOther] wrapping the refusal.
-func (c *Client) queryURL(op string, build func(*wire.Query) error) (*url.URL, error) {
+// queryURL returns the project URL with the query build writes, for a
+// request with the HTTP method method. A value the query refuses is a
+// [remote.KindOther] wrapping the refusal.
+func (c *Client) queryURL(op, method string, build func(*wire.Query) error) (*url.URL, error) {
 	var q wire.Query
 	if err := build(&q); err != nil {
 		return nil, &remote.Error{
 			Kind:    remote.KindOther,
 			Op:      op,
-			Method:  http.MethodGet,
+			Method:  method,
 			URL:     c.url.String(),
 			Message: err.Error(),
 			Err:     err,
