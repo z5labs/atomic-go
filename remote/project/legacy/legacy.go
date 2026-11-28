@@ -15,7 +15,10 @@
 // [Client.ListTags] and one tag with [Client.DownloadTag]; an attestation
 // with [Client.DownloadAttestation]; provenance graphs with
 // [Client.ProvenanceList] and [Client.DownloadProvenance]; and the
-// remote's views with [Client.ListViews] and [Client.ViewManifest].
+// remote's views with [Client.ListViews] and [Client.ViewManifest]. It
+// downloads selected [Layer]s of a change with [Client.DownloadChangeLayers]
+// and its [ChunkManifest] with [Client.ChunkManifest], and [NegotiateChunks]
+// works out locally which of the manifest's chunks are still needed.
 //
 // It uploads a change into a view with [Client.UploadChange], or streamed
 // with [Client.UploadChangeFrom], and stores one without a view with
