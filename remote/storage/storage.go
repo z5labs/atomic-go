@@ -14,12 +14,13 @@
 //
 // # Paths
 //
-// A slug, ID or key that goes into a request path can never address a
-// different resource than the one the caller named. Anything the Rust
-// client's URL parse would turn into another path, such as a '/' that adds
-// a segment, a '?' that ends the path or a ".." that removes the segment
-// before it, is refused with an error wrapping [ErrInvalidArgument] before
-// anything is sent (docs/remote/transport.md#building-request-urls).
+// A slug, ID or key that goes into a request path is refused, with an error
+// wrapping [ErrInvalidArgument] and before anything is sent, when the Rust
+// client's URL parse would turn it into another path: a '/' that adds a
+// segment, a '?' that ends the path, or a ".." that removes the segment
+// before it (docs/remote/transport.md#building-request-urls). Percent
+// escapes are sent as they are, as the Rust client sends them, so what a
+// server that decodes them before routing sees is the server's to decide.
 //
 // # Host dependencies
 //
@@ -109,7 +110,9 @@ func WithUserAgent(ua string) Option {
 // {"code": …, "message": …} with both strings. Any other body, plain text
 // included, gives the Message "HTTP {status}"
 // (docs/remote/errors.md#storage-api-json). Body holds at most
-// [remote.MaxErrorBody] bytes of the body. The [remote.Error] classifiers
+// [remote.MaxErrorBody] bytes of the body, and Code and Message are read
+// from those bytes alone, so an error body longer than that gives
+// "HTTP {status}" where the Rust client, which reads it whole, finds them. The [remote.Error] classifiers
 // and sentinels then work from the status: a 401 matches
 // [remote.ErrUnauthorized] and is [remote.Error.IsAuth], a 404 matches
 // [remote.ErrNotFound], and a 409 matches [remote.ErrConflict].
@@ -239,6 +242,11 @@ func checkBase(base *url.URL) (*url.URL, []error) {
 	u := *base
 	u.Scheme = strings.ToLower(u.Scheme)
 	escaped := strings.TrimRight(base.EscapedPath(), "/")
+	if escaped != "" && !strings.HasPrefix(escaped, "/") {
+		// A URL built by hand may have a rootless path, which net/http
+		// would send as a malformed request target.
+		escaped = "/" + escaped
+	}
 	p, err := url.PathUnescape(escaped)
 	if err != nil {
 		refuse("has a path that does not unescape: %v", err)

@@ -38,18 +38,23 @@ type responseMetadata struct {
 	TotalPages uint32 `json:"totalPages"`
 }
 
-// metadataAliases are the snake_case spellings responseMetadata also
-// accepts.
-var metadataAliases = map[string]string{
-	"per_page":    "perPage",
-	"total_pages": "totalPages",
+// metadataAlias returns the member a snake_case spelling responseMetadata
+// also accepts stands for.
+func metadataAlias(name string) (string, bool) {
+	switch name {
+	case "per_page":
+		return "perPage", true
+	case "total_pages":
+		return "totalPages", true
+	}
+	return "", false
 }
 
 // UnmarshalJSON decodes paging information whose members are all required
 // and whose perPage and totalPages may be spelled per_page and total_pages.
 func (m *responseMetadata) UnmarshalJSON(b []byte) error {
 	type plain responseMetadata
-	return unmarshalAliased(b, (*plain)(m), metadataAliases, "page", "perPage", "total", "totalPages")
+	return unmarshalAliased(b, (*plain)(m), metadataAlias, "page", "perPage", "total", "totalPages")
 }
 
 // APIError is the error a management API server reports, inside an
@@ -87,8 +92,8 @@ func (e *APIError) UnmarshalJSON(b []byte) error {
 // whose json tags name its members, the way serde decodes a struct with
 // aliases.
 //
-// Each member whose name is a key of aliases is read as the member named by
-// its value. A member written twice, or under both its name and an alias,
+// Each member for whose name alias reports a member is read as that member;
+// a nil alias accepts no other spellings. A member written twice, or under both its name and an alias,
 // is refused, as serde refuses a duplicate field. Every name in required,
 // which uses the names the tags give, must be present and not null. Names
 // match exactly, unknown members are ignored, and anything but exactly one
@@ -99,9 +104,9 @@ func (e *APIError) UnmarshalJSON(b []byte) error {
 //
 //	func (m *T) UnmarshalJSON(b []byte) error {
 //		type plain T
-//		return unmarshalAliased(b, (*plain)(m), aliasesOfT, "id")
+//		return unmarshalAliased(b, (*plain)(m), aliasOfT, "id")
 //	}
-func unmarshalAliased(b []byte, v any, aliases map[string]string, required ...string) error {
+func unmarshalAliased(b []byte, v any, alias func(string) (string, bool), required ...string) error {
 	dec := jsontext.NewDecoder(bytes.NewReader(b))
 	tok, err := dec.ReadToken()
 	if err != nil {
@@ -130,8 +135,10 @@ func unmarshalAliased(b []byte, v any, aliases map[string]string, required ...st
 			return err
 		}
 		name := written
-		if canonical, ok := aliases[name]; ok {
-			name = canonical
+		if alias != nil {
+			if canonical, ok := alias(name); ok {
+				name = canonical
+			}
 		}
 		// The encoder refuses a name it has already written, which is
 		// how a member under both its name and an alias is caught.

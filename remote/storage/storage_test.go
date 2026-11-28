@@ -78,6 +78,13 @@ func TestNewTrimsTrailingSlashes(t *testing.T) {
 	}
 }
 
+func TestNewRootsAHandBuiltPath(t *testing.T) {
+	base := &url.URL{Scheme: "https", Host: "x.example.com", Path: "api/"}
+	c, err := storage.New(base, doer(), remotetest.NewLogRecorder().Logger(), "0.22.1")
+	require.NoError(t, err)
+	require.Equal(t, "https://x.example.com/api", c.BaseURL().String())
+}
+
 func TestBaseURLReturnsACopy(t *testing.T) {
 	c, err := storage.New(mustURL(t, "https://example.com"), doer(), remotetest.NewLogRecorder().Logger(), "0.22.1")
 	require.NoError(t, err)

@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
@@ -262,7 +263,8 @@ func TestCallStatusErrors(t *testing.T) {
 }
 
 func TestCallStatusErrorClassifiers(t *testing.T) {
-	answer := func(status int, body string) error {
+	answer := func(t *testing.T, status int, body string) error {
+		t.Helper()
 		c, _, _ := muxClient(t, "GET /things/x", func(w http.ResponseWriter, r *http.Request) {
 			storagetest.Raw(w, status, body)
 		})
@@ -285,20 +287,20 @@ func TestCallStatusErrorClassifiers(t *testing.T) {
 		require.Equal(t, "HTTP error 401: bad token", rerr.Error())
 	})
 	t.Run("404", func(t *testing.T) {
-		err := answer(http.StatusNotFound, `{"success":false,"error":{"code":"NOT_FOUND","message":"workspace not found"}}`)
+		err := answer(t, http.StatusNotFound, `{"success":false,"error":{"code":"NOT_FOUND","message":"workspace not found"}}`)
 		require.ErrorIs(t, err, remote.ErrNotFound)
 		require.False(t, requireRemoteError(t, err).IsAuth())
 	})
 	t.Run("403", func(t *testing.T) {
-		err := answer(http.StatusForbidden, `{"code":"FORBIDDEN","message":"no"}`)
+		err := answer(t, http.StatusForbidden, `{"code":"FORBIDDEN","message":"no"}`)
 		require.ErrorIs(t, err, remote.ErrForbidden)
 		require.True(t, requireRemoteError(t, err).IsAuth())
 	})
 	t.Run("409", func(t *testing.T) {
-		require.ErrorIs(t, answer(http.StatusConflict, "conflict"), remote.ErrConflict)
+		require.ErrorIs(t, answer(t, http.StatusConflict, "conflict"), remote.ErrConflict)
 	})
 	t.Run("502", func(t *testing.T) {
-		err := answer(http.StatusBadGateway, "Bad Gateway")
+		err := answer(t, http.StatusBadGateway, "Bad Gateway")
 		require.Equal(t, "HTTP error 502: HTTP 502", err.Error())
 		require.Contains(t, err.Error(), "502")
 	})
@@ -579,6 +581,24 @@ func TestCallDecodesGzip(t *testing.T) {
 	th, err := getThing(t.Context(), c)
 	require.NoError(t, err)
 	require.Equal(t, thing{Name: "zipped"}, th)
+}
+
+func TestCallDecodesDeflate(t *testing.T) {
+	// HTTP's deflate is the zlib format, RFC 1950, as reqwest reads it.
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	_, err := zw.Write([]byte(`{"success":true,"data":{"name":"deflated"}}`))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	c, _, _ := muxClient(t, "GET /things/x", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "deflate")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(buf.Bytes())
+	})
+	th, err := getThing(t.Context(), c)
+	require.NoError(t, err)
+	require.Equal(t, thing{Name: "deflated"}, th)
 }
 
 func TestCallRefusesBodyLargerThanMax(t *testing.T) {

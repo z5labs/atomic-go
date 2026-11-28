@@ -128,3 +128,16 @@ func TestCallPathFollowsTheBasePath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "/api%20v1/workspaces/w%20s", got.requestURI)
 }
+
+func TestCallPathFollowsARootlessBasePath(t *testing.T) {
+	got := &seen{}
+	h := recording(got, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, storagetest.Data(w, http.StatusOK, thing{}))
+	}))
+	base := &url.URL{Scheme: "https", Host: "x.example.com", Path: "api"}
+	c, err := New(base, remotetest.Client(h), remotetest.NewLogRecorder().Logger(), testVersion)
+	require.NoError(t, err)
+	_, err = getWorkspace(t.Context(), c, "w")
+	require.NoError(t, err)
+	require.Equal(t, "/api/workspaces/w", got.requestURI)
+}
