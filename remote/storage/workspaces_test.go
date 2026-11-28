@@ -227,6 +227,20 @@ func TestWorkspacesDelete(t *testing.T) {
 	require.Empty(t, got.body)
 }
 
+func TestWorkspacesDeleteIgnoresA2xxBody(t *testing.T) {
+	for name, body := range map[string]string{
+		"no data":   `{"success":true}`,
+		"not JSON":  `deleted`,
+		"some data": `{"success":true,"data":{"deleted":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, got := serve(t, "DELETE /workspaces/{slug}", raw(http.StatusOK, body))
+			require.NoError(t, c.Workspaces().Delete(t.Context(), "workspace"))
+			require.Equal(t, 1, got.calls)
+		})
+	}
+}
+
 func TestWorkspacesDeleteNotFound(t *testing.T) {
 	c, _ := serve(t, "DELETE /workspaces/{slug}", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, storagetest.Fail(w, http.StatusNotFound, "NOT_FOUND", "workspace not found"))
@@ -252,7 +266,7 @@ func TestWorkspacesRefuseBadVisibilityWithNothingSent(t *testing.T) {
 }
 
 func TestWorkspacesRefuseBadSlugsWithNothingSent(t *testing.T) {
-	for _, slug := range []string{"..", ".", "", "a/b", "%2e%2e", "a?b"} {
+	for _, slug := range []string{"..", ".", "", "a/b", "%2e%2e", "a?b", "a#b"} {
 		t.Run(slug, func(t *testing.T) {
 			c, got := serve(t, "/", raw(http.StatusOK, envelope(docsWorkspace)))
 			ws := c.Workspaces()

@@ -101,6 +101,10 @@ func TestProjectsCreate(t *testing.T) {
 			req:  storage.CreateProjectRequest{Name: "my-project", DefaultView: "dev", Visibility: storage.VisibilityPublic},
 			want: `{"name": "my-project", "default_view": "dev", "visibility": "public"}`,
 		},
+		"empty default view is sent": {
+			req:  storage.CreateProjectRequest{Name: "p", Visibility: storage.VisibilityPublic},
+			want: `{"name": "p", "default_view": "", "visibility": "public"}`,
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -156,6 +160,20 @@ func TestProjectsDelete(t *testing.T) {
 	require.Equal(t, "/workspaces/ws/projects/project", got.requestURI)
 }
 
+func TestProjectsDeleteIgnoresA2xxBody(t *testing.T) {
+	for name, body := range map[string]string{
+		"no data":   `{"success":true}`,
+		"not JSON":  `deleted`,
+		"some data": `{"success":true,"data":{"deleted":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, got := serve(t, "DELETE /workspaces/{ws}/projects/{p}", raw(http.StatusOK, body))
+			require.NoError(t, c.Projects().Delete(t.Context(), "ws", "project"))
+			require.Equal(t, 1, got.calls)
+		})
+	}
+}
+
 func TestProjectsDeleteNotFound(t *testing.T) {
 	c, _ := serve(t, "DELETE /workspaces/{ws}/projects/{p}", func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, storagetest.Fail(w, http.StatusNotFound, "NOT_FOUND", "project not found"))
@@ -180,7 +198,7 @@ func TestProjectsRefuseBadVisibilityWithNothingSent(t *testing.T) {
 }
 
 func TestProjectsRefuseBadSlugsWithNothingSent(t *testing.T) {
-	for _, slug := range []string{"..", ".", "", "a/b", "%2E%2e", "a#b"} {
+	for _, slug := range []string{"..", ".", "", "a/b", "%2E%2e", "a#b", "a?b"} {
 		t.Run(slug, func(t *testing.T) {
 			c, got := serve(t, "/", raw(http.StatusOK, envelope(docsProject)))
 			ps := c.Projects()
