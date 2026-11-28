@@ -69,6 +69,14 @@ type request struct {
 // [ErrInvalidArgument], and a body that does not marshal is a
 // [remote.KindOther]; nothing is sent for either.
 func call[T any](ctx context.Context, c *Client, r request) (T, error) {
+	return callChecked[T](ctx, c, r, nil)
+}
+
+// callChecked is [call] with one more step: when check is not nil, the
+// envelope's data must pass it. A failure is a [remote.KindProtocol] whose
+// Message is the error's text and whose cause is the error, carrying the
+// response's URL, status and minimum version.
+func callChecked[T any](ctx context.Context, c *Client, r request, check func(T) error) (T, error) {
 	var zero T
 	u, err := c.requestURL(r.path, r.query)
 	if err != nil {
@@ -142,6 +150,11 @@ func call[T any](ctx context.Context, c *Client, r request) (T, error) {
 	}
 	if env.Data == nil {
 		return zero, protocolError(r, resp, "response had success=true but no data", ErrNoData)
+	}
+	if check != nil {
+		if err := check(*env.Data); err != nil {
+			return zero, protocolError(r, resp, err.Error(), err)
+		}
 	}
 	return *env.Data, nil
 }
