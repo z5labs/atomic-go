@@ -252,6 +252,16 @@ func TestDecode_FieldOrder(t *testing.T) {
 	}
 	updB := []byte{0x00, 0x04, 0x05}
 	updBValue := EdgeUpdate{Inode: Position{Change: 4, Pos: 5}}
+	// One name edge, 0x11 -> 0x91 (0x91 -> 0x11 for Unsolve), from {0, 6}
+	// to {5, 1..7}, introduced by 5; inode {5, 8}.
+	nameSolve := []byte{0x01, 0x11, 0x91, 0x00, 0x06, 0x05, 0x01, 0x07, 0x05, 0x05, 0x08}
+	nameUnsolve := []byte{0x01, 0x91, 0x11, 0x00, 0x06, 0x05, 0x01, 0x07, 0x05, 0x05, 0x08}
+	nameEdge := NewEdge{From: Position{Change: 0, Pos: 6}, To: Node{Change: 5, Start: 1, End: 7}, IntroducedBy: 5}
+	solveEdge, unsolveEdge := nameEdge, nameEdge
+	solveEdge.Previous, solveEdge.Flag = Folder|Block, Folder|Block|Deleted
+	unsolveEdge.Previous, unsolveEdge.Flag = Folder|Block|Deleted, Folder|Block
+	nameSolveValue := EdgeUpdate{Edges: []NewEdge{solveEdge}, Inode: Position{Change: 5, Pos: 8}}
+	nameUnsolveValue := EdgeUpdate{Edges: []NewEdge{unsolveEdge}, Inode: Position{Change: 5, Pos: 8}}
 
 	testCases := []struct {
 		name string
@@ -265,6 +275,18 @@ func TestDecode_FieldOrder(t *testing.T) {
 		{name: "FileMove", op: cat([]byte{0x06}, updA, insA, []byte{0x01, 'g'}), want: FileMove{Del: updAValue, Add: insAValue, Path: "g"}},
 		{name: "Edit EdgeUpdate", op: cat([]byte{0x07, 0x01}, updA, []byte{0x01, 'f', 0x09, 0x00}), want: Edit{Change: updAValue, Local: Local{Path: "f", Line: 9}}},
 		{name: "Replacement", op: cat([]byte{0x08}, updA, insB, []byte{0x01, 'f', 0x0a, 0x01, 0x04}), want: Replacement{Change: updAValue, Replacement: insBValue, Local: Local{Path: "f", Line: 10}, Encoding: ptr(Binary)}},
+		{name: "SolveNameConflict", op: cat([]byte{0x09}, nameSolve, []byte{0x01, 'n'}), want: SolveNameConflict{Name: nameSolveValue, Path: "n"}},
+		{name: "UnsolveNameConflict", op: cat([]byte{0x0a}, nameUnsolve, []byte{0x01, 'n'}), want: UnsolveNameConflict{Name: nameUnsolveValue, Path: "n"}},
+		{name: "SolveOrderConflict", op: cat([]byte{0x0b}, updA, []byte{0x01, 'f', 0x0b}), want: SolveOrderConflict{Change: updAValue, Local: Local{Path: "f", Line: 11}}},
+		{name: "UnsolveOrderConflict", op: cat([]byte{0x0c}, updA, []byte{0x01, 'f', 0x0c}), want: UnsolveOrderConflict{Change: updAValue, Local: Local{Path: "f", Line: 12}}},
+		{name: "ResurrectZombies", op: cat([]byte{0x0d}, updA, []byte{0x01, 'f', 0x0d, 0x01, 0x02}), want: ResurrectZombies{Change: updAValue, Local: Local{Path: "f", Line: 13}, Encoding: ptr(Utf16Be)}},
+		{name: "AddRoot", op: cat([]byte{0x0e}, insA, insB), want: AddRoot{Name: insAValue, Inode: insBValue}},
+		{name: "DelRoot", op: cat([]byte{0x0f}, updA, updB), want: DelRoot{Name: updAValue, Inode: updBValue}},
+		// inode {1, 7}, path "link", value Kind(Symlink): the round trip
+		// Atomic's own test makes.
+		{name: "SetAttr Kind", op: []byte{0x10, 0x01, 0x07, 0x04, 'l', 'i', 'n', 'k', 0x01, 0x01}, want: SetAttr{Inode: Position{Change: 1, Pos: 7}, Path: "link", Value: Symlink}},
+		// value Mode(0o644), a two-byte varint.
+		{name: "SetAttr Mode", op: []byte{0x10, 0x02, 0x08, 0x01, 'm', 0x00, 0xa4, 0x03}, want: SetAttr{Inode: Position{Change: 2, Pos: 8}, Path: "m", Value: Mode(0o644)}},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -351,6 +373,15 @@ func TestRoundTrip_EveryVariant(t *testing.T) {
 			Inode: Position{Change: 1, Pos: n},
 		}
 	}
+	names := func(previous, flag EdgeFlags) EdgeUpdate {
+		return EdgeUpdate{
+			Edges: []NewEdge{
+				{Previous: previous, Flag: flag, From: Position{Change: 0, Pos: 0}, To: Node{Change: 1, Start: 0, End: 3}, IntroducedBy: 1},
+				{Previous: previous, Flag: flag, From: Position{Change: 0, Pos: 0}, To: Node{Change: 2, Start: 4, End: 9}, IntroducedBy: 2},
+			},
+			Inode: Position{Change: 1, Pos: 3},
+		}
+	}
 
 	testCases := []struct {
 		variant OpVariant
@@ -370,6 +401,18 @@ func TestRoundTrip_EveryVariant(t *testing.T) {
 		{OpEdit, Edit{Change: upd(12), Local: Local{Path: "f", Line: 1 << 40}}},
 		{OpReplacement, Replacement{Change: upd(13), Replacement: ins(9, 12), Local: Local{Path: "f", Line: 3}, Encoding: ptr(Utf8)}},
 		{OpReplacement, Replacement{Change: upd(13), Replacement: ins(9, 12), Local: Local{Path: "f", Line: 3}}},
+		{OpSolveNameConflict, SolveNameConflict{Name: names(Folder|Block, Folder|Block|Deleted), Path: "f"}},
+		{OpUnsolveNameConflict, UnsolveNameConflict{Name: names(Folder|Block|Deleted, Folder|Block), Path: "f"}},
+		{OpSolveOrderConflict, SolveOrderConflict{Change: upd(14), Local: Local{Path: "f", Line: 5}}},
+		{OpUnsolveOrderConflict, UnsolveOrderConflict{Change: upd(15), Local: Local{Path: "f", Line: 6}}},
+		{OpResurrectZombies, ResurrectZombies{Change: upd(16), Local: Local{Path: "f", Line: 7}, Encoding: ptr(Utf8)}},
+		{OpResurrectZombies, ResurrectZombies{Change: upd(16), Local: Local{Path: "f", Line: 7}}},
+		{OpAddRoot, AddRoot{Name: ins(0, 0), Inode: ins(0, 0)}},
+		{OpDelRoot, DelRoot{Name: upd(17), Inode: upd(18)}},
+		{OpSetAttr, SetAttr{Inode: Position{Change: 1, Pos: 7}, Path: "f", Value: Mode(0o755)}},
+		{OpSetAttr, SetAttr{Inode: Position{Change: 1, Pos: 7}, Path: "f", Value: MaxMode}},
+		{OpSetAttr, SetAttr{Inode: Position{Change: this, Pos: 7}, Path: "f", Value: Regular}},
+		{OpSetAttr, SetAttr{Inode: Position{Change: 1, Pos: 7}, Path: "f", Value: Gitlink}},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.variant.String(), func(t *testing.T) {
@@ -392,17 +435,21 @@ func TestRoundTrip_EveryVariant(t *testing.T) {
 	}
 }
 
-func TestDecode_RefusesVariantsNotYetDecoded(t *testing.T) {
-	for v := OpSolveNameConflict; v <= OpSetAttr+1; v++ {
+func TestDecode_RefusesPrototypeContext(t *testing.T) {
+	// Variant 17 exists only in an experimental build of Atomic; 18 is
+	// beyond every build.
+	for _, v := range []OpVariant{OpSetAttr + 1, OpSetAttr + 2} {
 		t.Run(v.String(), func(t *testing.T) {
 			b := []byte{0x00, 0x01, byte(v), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-			_, err := Decode(b, changefile.Version2)
-			requireFormatError(t, err, changefile.ErrPayload)
-			require.ErrorIs(t, err, postcard.ErrUnknownVariant)
+			for _, ver := range versions() {
+				_, err := Decode(b, ver)
+				requireFormatError(t, err, changefile.ErrPayload)
+				require.ErrorIs(t, err, postcard.ErrUnknownVariant)
 
-			var pe *postcard.Error
-			require.ErrorAs(t, err, &pe)
-			require.Equal(t, int64(2), pe.Offset)
+				var pe *postcard.Error
+				require.ErrorAs(t, err, &pe)
+				require.Equal(t, int64(2), pe.Offset)
+			}
 		})
 	}
 }
@@ -467,6 +514,14 @@ func TestAppendPayload_Errors(t *testing.T) {
 		{name: "pointer atom", p: Payload{Ops: []Op{Edit{Change: &ins}}}, kind: changefile.ErrInvalidGraphOp},
 		{name: "unknown encoding", p: Payload{Ops: []Op{FileAdd{Path: "f", Encoding: ptr(Encoding(5))}}}, kind: changefile.ErrInvalidGraphOp},
 		{name: "second op invalid", p: Payload{Ops: []Op{DirAdd{Path: "d"}, Replacement{Encoding: ptr(Encoding(9))}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "name conflict path not UTF-8", p: Payload{Ops: []Op{SolveNameConflict{Path: bad}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "order conflict local path not UTF-8", p: Payload{Ops: []Op{UnsolveOrderConflict{Local: Local{Path: bad}}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "zombie unknown encoding", p: Payload{Ops: []Op{ResurrectZombies{Local: Local{Path: "f"}, Encoding: ptr(Encoding(5))}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "SetAttr path not UTF-8", p: Payload{Ops: []Op{SetAttr{Path: bad, Value: Mode(0)}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "SetAttr nil value", p: Payload{Ops: []Op{SetAttr{Path: "f"}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "SetAttr pointer value", p: Payload{Ops: []Op{SetAttr{Path: "f", Value: ptr(Mode(0))}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "SetAttr unknown kind", p: Payload{Ops: []Op{SetAttr{Path: "f", Value: InodeKind(3)}}}, kind: changefile.ErrInvalidGraphOp},
+		{name: "pointer SetAttr", p: Payload{Ops: []Op{&SetAttr{Path: "f", Value: Mode(0)}}}, kind: changefile.ErrInvalidGraphOp},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -507,6 +562,253 @@ func TestEnum_Strings(t *testing.T) {
 	var attrs []InodeAttr
 	attrs = append(attrs, Mode(0o644), Symlink)
 	require.Len(t, attrs, 2)
+}
+
+// rawPayload writes ops with an empty path and content range, without the
+// checks AppendPayload runs, so that a test can hand Decode an op that
+// breaks one of them. Every SetAttr value must be a Mode or an InodeKind.
+func rawPayload(ops ...Op) []byte {
+	e := postcard.NewEncoder(nil)
+	e.Str("")
+	postcard.PutSeq(e, ops, putOp)
+	e.U64(0)
+	e.U64(0)
+	return e.Bytes()
+}
+
+// requireRule asserts that ops break one of Atomic's pre-expansion checks:
+// Decode refuses them in every version given, and AppendPayload refuses
+// them.
+func requireRule(t *testing.T, ops []Op, vs ...changefile.Version) {
+	t.Helper()
+	b := rawPayload(ops...)
+	for _, v := range vs {
+		p, err := Decode(b, v)
+		requireFormatError(t, err, changefile.ErrInvalidGraphOp)
+		require.Equal(t, Payload{}, p)
+	}
+	out, err := AppendPayload([]byte{0xaa}, Payload{Ops: ops})
+	requireFormatError(t, err, changefile.ErrInvalidGraphOp)
+	require.Equal(t, []byte{0xaa}, out)
+}
+
+// requirePasses asserts that ops pass Atomic's pre-expansion checks: they
+// encode, and decode in every version back to themselves.
+func requirePasses(t *testing.T, ops []Op) {
+	t.Helper()
+	p := Payload{Ops: ops}
+	b, err := AppendPayload(nil, p)
+	require.NoError(t, err)
+	require.Equal(t, rawPayload(ops...), b)
+	for _, v := range versions() {
+		got, err := Decode(b, v)
+		require.NoError(t, err)
+		require.Equal(t, p, got)
+	}
+}
+
+func TestSetAttr_Rules(t *testing.T) {
+	inode := Position{Change: 1, Pos: 7}
+
+	t.Run("Kind(Symlink) round-trips", func(t *testing.T) {
+		requirePasses(t, []Op{SetAttr{Inode: inode, Path: "link", Value: Symlink}})
+	})
+	t.Run("Mode 0o777 passes", func(t *testing.T) {
+		requirePasses(t, []Op{SetAttr{Inode: inode, Path: "f", Value: Mode(0o777)}})
+	})
+	t.Run("Mode 0o1000 is refused", func(t *testing.T) {
+		requireRule(t, []Op{SetAttr{Inode: inode, Path: "f", Value: Mode(0o1000)}}, versions()...)
+	})
+	t.Run("Mode 0xffff is refused", func(t *testing.T) {
+		requireRule(t, []Op{SetAttr{Inode: inode, Path: "f", Value: Mode(0xffff)}}, versions()...)
+	})
+	t.Run("empty path is refused", func(t *testing.T) {
+		requireRule(t, []Op{SetAttr{Inode: inode, Value: Symlink}}, versions()...)
+	})
+}
+
+func TestSetAttr_DecodeErrors(t *testing.T) {
+	// A payload of one SetAttr, inode {1, 7}, path "f", whose value starts
+	// at offset 7. Each tail is the rest of the payload: the value as far
+	// as it goes, then the content range where the value is whole.
+	testCases := []struct {
+		name   string
+		tail   []byte
+		cause  error
+		offset int64
+	}{
+		{name: "unknown attribute variant", tail: []byte{0x02, 0x00, 0x00, 0x00}, cause: postcard.ErrUnknownVariant, offset: 7},
+		{name: "unknown inode kind", tail: []byte{0x01, 0x03, 0x00, 0x00}, cause: postcard.ErrUnknownVariant, offset: 8},
+		{name: "mode overflows u16", tail: []byte{0x00, 0xff, 0xff, 0x04, 0x00, 0x00}, cause: postcard.ErrBadVarint, offset: 8},
+		{name: "value missing", tail: nil, cause: postcard.ErrUnexpectedEnd, offset: 7},
+		{name: "mode missing", tail: []byte{0x00}, cause: postcard.ErrUnexpectedEnd, offset: 8},
+		{name: "mode truncated", tail: []byte{0x00, 0xa4}, cause: postcard.ErrUnexpectedEnd, offset: 8},
+		{name: "kind missing", tail: []byte{0x01}, cause: postcard.ErrUnexpectedEnd, offset: 8},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := cat([]byte{0x00, 0x01, 0x10, 0x01, 0x07, 0x01, 'f'}, tc.tail)
+			p, err := Decode(b, changefile.Version2)
+			requireFormatError(t, err, changefile.ErrPayload)
+			require.ErrorIs(t, err, tc.cause)
+			require.Equal(t, Payload{}, p)
+
+			var pe *postcard.Error
+			require.ErrorAs(t, err, &pe)
+			require.Equal(t, tc.offset, pe.Offset)
+		})
+	}
+}
+
+func TestNameConflict_Rules(t *testing.T) {
+	alive, deleted := Folder|Block, Folder|Block|Deleted
+	edge := func(previous, flag EdgeFlags, start, end uint32) NewEdge {
+		return NewEdge{Previous: previous, Flag: flag, From: Position{Change: 0, Pos: 0}, To: Node{Change: 1, Start: start, End: end}, IntroducedBy: 1}
+	}
+	from := func(e NewEdge, p Position) NewEdge {
+		e.From = p
+		return e
+	}
+	introducedBy := func(e NewEdge, h changefile.HashIndex) NewEdge {
+		e.IntroducedBy = h
+		return e
+	}
+	update := func(edges ...NewEdge) EdgeUpdate {
+		return EdgeUpdate{Edges: edges, Inode: Position{Change: 1, Pos: 9}}
+	}
+	solve := func(path string, edges ...NewEdge) Op {
+		return SolveNameConflict{Name: update(edges...), Path: path}
+	}
+	unsolve := func(path string, edges ...NewEdge) Op {
+		return UnsolveNameConflict{Name: update(edges...), Path: path}
+	}
+
+	passes := []struct {
+		name string
+		op   Op
+	}{
+		{name: "Solve 0x11 to 0x91", op: solve("f", edge(alive, deleted, 0, 3))},
+		{name: "Unsolve 0x91 to 0x11", op: unsolve("f", edge(deleted, alive, 0, 3))},
+		{name: "Solve with distinct edges", op: solve("f", edge(alive, deleted, 0, 3), edge(alive, deleted, 3, 5))},
+		{name: "Unsolve with distinct edges", op: unsolve("f", edge(deleted, alive, 0, 3), edge(deleted, alive, 3, 5))},
+		// A repeat is the whole edge: the same To with another From or
+		// IntroducedBy is a distinct edge.
+		{name: "Solve same To, other From", op: solve("f", edge(alive, deleted, 0, 3), from(edge(alive, deleted, 0, 3), Position{Change: 2, Pos: 1}))},
+		{name: "Solve same To, other IntroducedBy", op: solve("f", edge(alive, deleted, 0, 3), introducedBy(edge(alive, deleted, 0, 3), 2))},
+	}
+	for _, tc := range passes {
+		t.Run(tc.name, func(t *testing.T) {
+			requirePasses(t, []Op{tc.op})
+		})
+	}
+
+	// Every one fails in every version: a legacy marker has no edges and a
+	// path, and none of these is one.
+	refused := []struct {
+		name string
+		op   Op
+	}{
+		{name: "Solve 0x91 to 0x11", op: solve("f", edge(deleted, alive, 0, 3))},
+		{name: "Unsolve 0x11 to 0x91", op: unsolve("f", edge(alive, deleted, 0, 3))},
+		{name: "Solve with an undefined bit", op: solve("f", edge(alive|0x02, deleted, 0, 3))},
+		{name: "Unsolve with an undefined bit", op: unsolve("f", edge(deleted, alive|0x40, 0, 3))},
+		{name: "Solve 0x01 to 0x81", op: solve("f", edge(Block, Block|Deleted, 0, 3))},
+		{name: "Solve with a bad second edge", op: solve("f", edge(alive, deleted, 0, 3), edge(alive, alive, 3, 5))},
+		{name: "Solve empty path", op: solve("", edge(alive, deleted, 0, 3))},
+		{name: "Unsolve empty path", op: unsolve("", edge(deleted, alive, 0, 3))},
+		{name: "Solve empty path and edges", op: solve("")},
+		{name: "Solve to.start == to.end", op: solve("f", edge(alive, deleted, 3, 3))},
+		{name: "Unsolve to.start == to.end", op: unsolve("f", edge(deleted, alive, 3, 3))},
+		{name: "Solve to.start > to.end", op: solve("f", edge(alive, deleted, 4, 3))},
+		{name: "Solve repeated edge", op: solve("f", edge(alive, deleted, 0, 3), edge(alive, deleted, 0, 3))},
+		{name: "Unsolve repeated edge", op: unsolve("f", edge(deleted, alive, 0, 3), edge(deleted, alive, 3, 5), edge(deleted, alive, 0, 3))},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name, func(t *testing.T) {
+			requireRule(t, []Op{tc.op}, versions()...)
+		})
+	}
+
+	t.Run("empty edges", func(t *testing.T) {
+		// Refused in versions 2 and 3 and on encode; version 1 takes it as
+		// a legacy marker.
+		requireRule(t, []Op{solve("f")}, changefile.Version2, changefile.Version3)
+		requireRule(t, []Op{unsolve("f")}, changefile.Version2, changefile.Version3)
+	})
+}
+
+func TestNameConflict_LegacyMarkers(t *testing.T) {
+	for _, op := range []Op{
+		SolveNameConflict{Name: EdgeUpdate{Inode: Position{Change: 1, Pos: 2}}, Path: "f"},
+		UnsolveNameConflict{Name: EdgeUpdate{Inode: Position{Change: 1, Pos: 2}}, Path: "f"},
+	} {
+		t.Run(op.Variant().String(), func(t *testing.T) {
+			b := rawPayload(op)
+
+			p, err := Decode(b, changefile.Version1)
+			require.NoError(t, err)
+			require.Equal(t, Payload{Ops: []Op{op}}, p)
+
+			for _, v := range []changefile.Version{changefile.Version2, changefile.Version3} {
+				_, err := Decode(b, v)
+				requireFormatError(t, err, changefile.ErrInvalidGraphOp)
+			}
+
+			// A decoded marker is not written back: no writer may produce
+			// one.
+			out, err := AppendPayload(nil, p)
+			requireFormatError(t, err, changefile.ErrInvalidGraphOp)
+			require.Nil(t, out)
+		})
+	}
+
+	t.Run("empty path in version 1", func(t *testing.T) {
+		b := rawPayload(SolveNameConflict{})
+		_, err := Decode(b, changefile.Version1)
+		requireFormatError(t, err, changefile.ErrInvalidGraphOp)
+	})
+
+	t.Run("edges still checked in version 1", func(t *testing.T) {
+		op := SolveNameConflict{
+			Name: EdgeUpdate{Edges: []NewEdge{{Previous: Folder | Block | Deleted, Flag: Folder | Block, To: Node{Change: 1, Start: 0, End: 3}, IntroducedBy: 1}}},
+			Path: "f",
+		}
+		_, err := Decode(rawPayload(op), changefile.Version1)
+		requireFormatError(t, err, changefile.ErrInvalidGraphOp)
+	})
+}
+
+func TestDecode_RuleErrorNamesOp(t *testing.T) {
+	ops := []Op{
+		DirAdd{Path: "d"},
+		SetAttr{Path: "f", Value: Mode(0o1000)},
+		SetAttr{Value: Mode(0)},
+	}
+	_, err := Decode(rawPayload(ops...), changefile.Version2)
+	requireFormatError(t, err, changefile.ErrInvalidGraphOp)
+	var fe *changefile.FormatError
+	require.ErrorAs(t, err, &fe)
+	require.Contains(t, fe.Detail, "op 1:")
+
+	_, err = AppendPayload(nil, Payload{Ops: ops})
+	require.ErrorAs(t, err, &fe)
+	require.Contains(t, fe.Detail, "op 1:")
+}
+
+func TestDecode_PayloadErrorBeatsRuleError(t *testing.T) {
+	// The whole payload decodes before any op is checked, as in Atomic, so
+	// an op that breaks a rule does not hide a later one that does not
+	// decode.
+	b := []byte{
+		0x00, 0x02,
+		// op 0: SetAttr, inode {0, 0}, path "", Mode(0): breaks a rule.
+		0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+		// op 1: variant 17, which does not decode.
+		0x11,
+	}
+	_, err := Decode(b, changefile.Version2)
+	requireFormatError(t, err, changefile.ErrPayload)
+	require.ErrorIs(t, err, postcard.ErrUnknownVariant)
 }
 
 func requireFormatError(t *testing.T, err error, kind error) {

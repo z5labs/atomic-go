@@ -239,6 +239,93 @@ type Replacement struct {
 	Encoding *Encoding
 }
 
+// SolveNameConflict resolves a name conflict by deleting the losing name
+// edges: variant 9. Every edge goes from Folder|Block to
+// Folder|Block|Deleted ([Decode] and [AppendPayload] check this).
+type SolveNameConflict struct {
+	// Name is the losing name edges deleted. A version 1 file may hold
+	// none, as a legacy marker.
+	Name EdgeUpdate
+
+	// Path is the surviving path. It must not be empty.
+	Path string
+}
+
+// UnsolveNameConflict undoes a [SolveNameConflict] by restoring the name
+// edges it deleted: variant 10. Every edge goes from Folder|Block|Deleted
+// to Folder|Block.
+type UnsolveNameConflict struct {
+	// Name is the name edges restored. A version 1 file may hold none, as
+	// a legacy marker.
+	Name EdgeUpdate
+
+	// Path is the surviving path. It must not be empty.
+	Path string
+}
+
+// SolveOrderConflict resolves an order conflict between content vertices:
+// variant 11.
+type SolveOrderConflict struct {
+	// Change is the edge changes that order the content.
+	Change EdgeUpdate
+
+	// Local is where the conflict is, for display.
+	Local Local
+}
+
+// UnsolveOrderConflict undoes a [SolveOrderConflict]: variant 12.
+type UnsolveOrderConflict struct {
+	// Change is the edge changes undone.
+	Change EdgeUpdate
+
+	// Local is where the conflict is, for display.
+	Local Local
+}
+
+// ResurrectZombies restores deleted content that other changes still
+// depend on: variant 13.
+type ResurrectZombies struct {
+	// Change is the edges restored.
+	Change EdgeUpdate
+
+	// Local is where the content is, for display.
+	Local Local
+
+	// Encoding is the content's text encoding, or nil.
+	Encoding *Encoding
+}
+
+// AddRoot adds a root vertex: variant 14. It has no path.
+type AddRoot struct {
+	// Name is the root's name vertex.
+	Name Insertion
+
+	// Inode is the root's inode vertex.
+	Inode Insertion
+}
+
+// DelRoot deletes a root vertex: variant 15. It has no path.
+type DelRoot struct {
+	// Name is the name edges deleted.
+	Name EdgeUpdate
+
+	// Inode is the inode edges deleted.
+	Inode EdgeUpdate
+}
+
+// SetAttr sets an attribute of a file: variant 16.
+type SetAttr struct {
+	// Inode is the file's inode vertex.
+	Inode Position
+
+	// Path is the file's path. It must not be empty.
+	Path string
+
+	// Value is the attribute set: a [Mode] of at most 0o777, or one of the
+	// three [InodeKind] values.
+	Value InodeAttr
+}
+
 // Variant returns [OpFileAdd].
 func (FileAdd) Variant() OpVariant { return OpFileAdd }
 
@@ -266,15 +353,47 @@ func (Edit) Variant() OpVariant { return OpEdit }
 // Variant returns [OpReplacement].
 func (Replacement) Variant() OpVariant { return OpReplacement }
 
-func (FileAdd) graphOp()     {}
-func (DirAdd) graphOp()      {}
-func (DirDel) graphOp()      {}
-func (DirUndel) graphOp()    {}
-func (FileDel) graphOp()     {}
-func (FileUndel) graphOp()   {}
-func (FileMove) graphOp()    {}
-func (Edit) graphOp()        {}
-func (Replacement) graphOp() {}
+// Variant returns [OpSolveNameConflict].
+func (SolveNameConflict) Variant() OpVariant { return OpSolveNameConflict }
+
+// Variant returns [OpUnsolveNameConflict].
+func (UnsolveNameConflict) Variant() OpVariant { return OpUnsolveNameConflict }
+
+// Variant returns [OpSolveOrderConflict].
+func (SolveOrderConflict) Variant() OpVariant { return OpSolveOrderConflict }
+
+// Variant returns [OpUnsolveOrderConflict].
+func (UnsolveOrderConflict) Variant() OpVariant { return OpUnsolveOrderConflict }
+
+// Variant returns [OpResurrectZombies].
+func (ResurrectZombies) Variant() OpVariant { return OpResurrectZombies }
+
+// Variant returns [OpAddRoot].
+func (AddRoot) Variant() OpVariant { return OpAddRoot }
+
+// Variant returns [OpDelRoot].
+func (DelRoot) Variant() OpVariant { return OpDelRoot }
+
+// Variant returns [OpSetAttr].
+func (SetAttr) Variant() OpVariant { return OpSetAttr }
+
+func (FileAdd) graphOp()              {}
+func (DirAdd) graphOp()               {}
+func (DirDel) graphOp()               {}
+func (DirUndel) graphOp()             {}
+func (FileDel) graphOp()              {}
+func (FileUndel) graphOp()            {}
+func (FileMove) graphOp()             {}
+func (Edit) graphOp()                 {}
+func (Replacement) graphOp()          {}
+func (SolveNameConflict) graphOp()    {}
+func (UnsolveNameConflict) graphOp()  {}
+func (SolveOrderConflict) graphOp()   {}
+func (UnsolveOrderConflict) graphOp() {}
+func (ResurrectZombies) graphOp()     {}
+func (AddRoot) graphOp()              {}
+func (DelRoot) graphOp()              {}
+func (SetAttr) graphOp()              {}
 
 // Position is a byte offset in some change's content: a CompactPosition
 // (docs/remote/change-format/graph.md#compactposition).
@@ -483,8 +602,15 @@ func (k InodeKind) String() string {
 	}
 }
 
+// inodeKindVariants is the number of variants InodeKind declares.
+const inodeKindVariants = 3
+
 // Mode is Unix permission bits. As an [InodeAttr] it is the Mode variant.
+// Atomic accepts 0o000 to [MaxMode].
 type Mode uint16
+
+// MaxMode is the largest [Mode] Atomic accepts.
+const MaxMode Mode = 0o777
 
 // InodeAttr is a file attribute value, set by a SetAttr op
 // (docs/remote/change-format/graph.md#inodeattr). [Mode] is variant 0 and
