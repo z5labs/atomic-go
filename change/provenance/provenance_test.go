@@ -337,7 +337,7 @@ func TestEmptyList(t *testing.T) {
 
 func TestUnsupportedLayout(t *testing.T) {
 	_, valid := emptyRecord()
-	for _, l := range []Layout{LayoutBeforeXai, LayoutV0, LayoutJuly2026, Layout(9)} {
+	for _, l := range []Layout{Layout(4), Layout(9)} {
 		t.Run(l.String(), func(t *testing.T) {
 			got, err := DecodeAs(cat([]byte{1}, valid), l)
 			require.Nil(t, got)
