@@ -3,6 +3,7 @@ package legacy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -66,8 +67,11 @@ func (c *Client) UploadChange(ctx context.Context, hash, view string, data []byt
 // Its failures are UploadChange's.
 //
 // The Content-Length is size, and r is read once, as the body is sent; it
-// is never closed. The send fails with a [remote.KindConnectionFailed] when
-// r holds fewer or more than size bytes. A size of 0 sends no body and does
+// is never closed. r is never read past size+1 bytes. The send fails with a
+// [remote.KindConnectionFailed] when r holds fewer than size bytes, and
+// when it holds more, which the extra byte read after the first size
+// reveals; a server that has already answered once it took the first size
+// bytes may make that a success instead. A size of 0 sends no body and does
 // not read r. A nil r or a negative size is a [remote.KindOther], and
 // nothing is sent. net/http may still be reading r after UploadChangeFrom
 // returns, when the server answers before the upload ends, so do not reuse
@@ -87,10 +91,44 @@ func (c *Client) UploadChangeFrom(ctx context.Context, hash, view string, r io.R
 		op:           opUploadChangeStreamed,
 		build:        insertQuery(hash, view),
 		contentType:  contentTypeBytes,
-		stream:       r,
+		stream:       &exactReader{r: r, left: size},
 		streamLength: size,
 		refuse:       refuseUploadChange,
 	})
+}
+
+// errStreamTooLong is the cause of a failed [Client.UploadChangeFrom] whose
+// reader holds more bytes than its size.
+var errStreamTooLong = errors.New("legacy: the reader holds more than size bytes")
+
+// exactReader reads the left bytes r should hold, and then reads one more
+// byte to check that r is done, failing with errStreamTooLong if it is
+// not. net/http reads a body past its Content-Length to the end, into
+// io.Discard, before it reports one that is too long; without this, an
+// endless reader would be read until the request's context ended.
+type exactReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (e *exactReader) Read(p []byte) (int, error) {
+	if e.left <= 0 {
+		var probe [1]byte
+		switch _, err := io.ReadFull(e.r, probe[:]); err {
+		case nil:
+			return 0, errStreamTooLong
+		case io.EOF:
+			return 0, io.EOF
+		default:
+			return 0, err
+		}
+	}
+	if int64(len(p)) > e.left {
+		p = p[:e.left]
+	}
+	n, err := e.r.Read(p)
+	e.left -= int64(n)
+	return n, err
 }
 
 // insertQuery builds the query insert={hash}&view={view}.
@@ -243,7 +281,8 @@ func (c *Client) UploadTag(ctx context.Context, state, view string, data []byte)
 // written without a fraction or an exponent. Nothing else in the body is
 // read. A body that is not JSON is a [remote.KindProtocol] "Invalid fork
 // response: {error}", whose text is Go's JSON error rather than the Rust
-// client's.
+// client's, and which keeps the body, at most [remote.MaxErrorBody] bytes
+// of it, in Body.
 //
 // 404 is a [remote.KindViewNotFound] whose Subject is source, the view
 // being forked. 400 is a [remote.KindProtocol] whose Message is the body.
@@ -271,7 +310,9 @@ func (c *Client) ForkView(ctx context.Context, source, target string) (changes u
 		ok: func(r response) error {
 			changes, err = parseForkResponse(r.data)
 			if err != nil {
-				return r.protocol("Invalid fork response: "+err.Error(), err)
+				e := r.protocol("Invalid fork response: "+err.Error(), err)
+				e.Body = string(r.data[:min(len(r.data), remote.MaxErrorBody)])
+				return e
 			}
 			return nil
 		},

@@ -184,6 +184,50 @@ func TestUploadChangeFromAShortReader(t *testing.T) {
 	require.Empty(t, s.seen)
 }
 
+// endless yields 'A' for ever.
+type endless struct{}
+
+func (endless) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'A'
+	}
+	return len(p), nil
+}
+
+func TestUploadChangeFromALongReader(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		r    io.Reader
+		size int64
+	}{
+		{name: "one byte over", r: strings.NewReader("12345"), size: 4},
+		{name: "endless, past 4 KiB", r: endless{}, size: 8 << 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, s := serve(t, map[string]reply{"insert=HASH&view=dev": {}})
+			r := &countingReader{r: tc.r}
+
+			err := c.UploadChangeFrom(context.Background(), "HASH", "dev", r, tc.size)
+			re := requireRemoteError(t, err, remote.KindConnectionFailed)
+			require.Equal(t, "upload_change_streamed", re.Op)
+			require.Equal(t, int(tc.size)+1, r.n)
+			require.Empty(t, s.seen)
+		})
+	}
+}
+
+func TestUploadChangeFromZeroSizeDoesNotRead(t *testing.T) {
+	c, s := serve(t, map[string]reply{"insert=HASH&view=dev": {}})
+	r := &countingReader{r: strings.NewReader("unread")}
+
+	require.NoError(t, c.UploadChangeFrom(context.Background(), "HASH", "dev", r, 0))
+	require.Zero(t, r.n)
+	require.Len(t, s.seen, 1)
+	require.Empty(t, s.seen[0].body)
+	require.Zero(t, s.seen[0].contentLength)
+	require.Equal(t, []string{"application/octet-stream"}, s.seen[0].header.Values("Content-Type"))
+}
+
 func TestUploadChangeFromRefusesBadArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -254,6 +298,7 @@ func TestForkViewBodiesThatAreNotJSON(t *testing.T) {
 			require.Equal(t, "fork_view", re.Op)
 			require.Equal(t, http.MethodPost, re.Method)
 			require.Equal(t, http.StatusOK, re.StatusCode)
+			require.Equal(t, body, re.Body)
 			require.Error(t, re.Err)
 		})
 	}
