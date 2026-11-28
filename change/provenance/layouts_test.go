@@ -363,8 +363,9 @@ func TestDecodeRefusesBadOrders(t *testing.T) {
 	payload := cat([]byte{1}, valid)
 
 	t.Run("empty", func(t *testing.T) {
-		got, _, err := Decode(payload, nil)
+		got, layout, err := Decode(payload, nil)
 		require.Nil(t, got)
+		require.Equal(t, Layout(0), layout)
 		require.ErrorIs(t, err, ErrUnsupportedLayout)
 	})
 
@@ -391,4 +392,80 @@ func TestOrders(t *testing.T) {
 	o := FullReaderOrder()
 	o[0] = LayoutJuly2026
 	require.Equal(t, LayoutCurrent, FullReaderOrder()[0])
+}
+
+// TestHistoricalLayoutsMultipleRecords checks that each historical
+// decoder reads exactly its layout's fields, so the next record begins
+// where it should. DecodeAs ignores leftover bytes, so a single-record
+// payload would not notice a decoder that stopped short.
+func TestHistoricalLayoutsMultipleRecords(t *testing.T) {
+	t.Run("July2026", func(t *testing.T) {
+		// first sets agent_mode and task_plan; second sets none of
+		// fields 15 to 21.
+		first := cat([]byte{9}, str("m1"), str("v1"), []byte{0, 0},
+			str("opencode"), some(str("1.0")...),
+			[]byte{3, 0}, []byte{0, 0, 0, 0, 0, 0}, f64(0), []byte{0},
+			[]byte{0, 0, 0, 0}, []byte{0},
+			some(str("build")...), []byte{0, 0, 0, 0, 0}, some(str("[]")...))
+		second := cat([]byte{0}, str("m2"), str("v2"), []byte{0, 4},
+			str("other"), []byte{0},
+			[]byte{3, 0}, []byte{0, 0, 0, 0, 0, 0}, f64(0), []byte{0},
+			[]byte{0, 0, 0, 0}, []byte{0},
+			[]byte{0, 0, 0, 0, 0, 0, 0})
+		payload := cat([]byte{2}, first, second)
+
+		got, err := postcard.DecodeExact(payload, func(d *postcard.Decoder) []Record {
+			return postcard.Seq(d, decodeRecordJuly2026)
+		})
+		require.NoError(t, err)
+		require.Equal(t, []Record{
+			{
+				Vendor:       Vendor{Kind: VendorLocal},
+				Model:        "m1",
+				ModelVersion: ptr("v1"),
+				Prompt:       Prompt{Kind: PromptNone},
+				Metadata:     []Pair{{"agent_name", "opencode"}, {"agent_version", "1.0"}},
+				AgentMode:    ptr("build"),
+				TaskPlan:     ptr("[]"),
+			},
+			{
+				Model:          "m2",
+				ModelVersion:   ptr("v2"),
+				SuggestionType: SuggestionReview,
+				Prompt:         Prompt{Kind: PromptNone},
+				Metadata:       []Pair{{"agent_name", "other"}},
+			},
+		}, got)
+
+		viaOrder, layout, err := Decode(payload, SectionReaderOrder())
+		require.NoError(t, err)
+		require.Equal(t, LayoutJuly2026, layout)
+		require.Equal(t, got, viaOrder)
+	})
+
+	t.Run("July2026 fixture uses all its bytes", func(t *testing.T) {
+		_, err := postcard.DecodeExact(july2026Fixture(), func(d *postcard.Decoder) []Record {
+			return postcard.Seq(d, decodeRecordJuly2026)
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("V0", func(t *testing.T) {
+		b, want := v0Record()
+		second := cat([]byte{9}, str("acme"), str("m"), []byte{0, 0, 0, 3, 0},
+			uv(1), uv(2), uv(3), uv(4), uv(5), f64(0), []byte{0},
+			[]byte{0, 0, 0, 0}, []byte{0})
+		payload := cat([]byte{2}, b, second)
+
+		got, err := postcard.DecodeExact(payload, func(d *postcard.Decoder) []Record {
+			return postcard.Seq(d, decodeRecordV0)
+		})
+		require.NoError(t, err)
+		require.Equal(t, []Record{want, {
+			Vendor: Vendor{Kind: VendorOther, Name: "acme"},
+			Model:  "m",
+			Prompt: Prompt{Kind: PromptNone},
+			Tokens: TokenUsage{Input: 1, Output: 2, Total: 3, CacheRead: 4, CacheWrite: 5},
+		}}, got)
+	})
 }

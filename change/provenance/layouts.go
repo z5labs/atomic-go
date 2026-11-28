@@ -33,9 +33,11 @@ func SectionReaderOrder() []Layout {
 // When no layout decodes, Decode returns the error from the first layout
 // in order, with that layout. Both of Atomic's orders begin with
 // [LayoutCurrent], so that is the current layout's error, as Atomic
-// reports. An empty order, or one holding a layout this package does not
-// name, fails with an error wrapping [ErrUnsupportedLayout] before
-// anything is decoded.
+// reports. An order holding a layout this package does not name fails,
+// before anything is decoded, with an error wrapping
+// [ErrUnsupportedLayout] and the first such layout. An empty order fails
+// with an error wrapping [ErrUnsupportedLayout] too; the layout returned
+// with it is the zero Layout, and names no layout that was tried.
 //
 // The layout that decodes first is not always the one the payload was
 // written in, because postcard writes no type tags or field names. The
@@ -51,7 +53,7 @@ func SectionReaderOrder() []Layout {
 // lets a caller tell which reading it got.
 func Decode(b []byte, order []Layout) ([]Record, Layout, error) {
 	if len(order) == 0 {
-		return nil, LayoutCurrent, fmt.Errorf("%w: no layouts to try", ErrUnsupportedLayout)
+		return nil, 0, fmt.Errorf("%w: no layouts to try", ErrUnsupportedLayout)
 	}
 	for _, l := range order {
 		if _, ok := recordDecoder(l); !ok {
