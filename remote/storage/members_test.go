@@ -79,6 +79,7 @@ func TestOrgMemberInfoRefusesBadBodies(t *testing.T) {
 		"missing identity_id": `{"org_id": "00000000-0000-0000-0000-000000000001", "role": "member", "joined_at": "2024-01-02T00:00:00Z"}`,
 		"missing role":        `{"org_id": "00000000-0000-0000-0000-000000000001", "identity_id": "00000000-0000-0000-0000-000000000002", "joined_at": "2024-01-02T00:00:00Z"}`,
 		"missing joined_at":   `{"org_id": "00000000-0000-0000-0000-000000000001", "identity_id": "00000000-0000-0000-0000-000000000002", "role": "member"}`,
+		"null org_id":         `{"org_id": null, "identity_id": "00000000-0000-0000-0000-000000000002", "role": "member", "joined_at": "2024-01-02T00:00:00Z"}`,
 		"null role":           `{"org_id": "00000000-0000-0000-0000-000000000001", "identity_id": "00000000-0000-0000-0000-000000000002", "role": null, "joined_at": "2024-01-02T00:00:00Z"}`,
 		"both spellings":      `{"org_id": "00000000-0000-0000-0000-000000000001", "orgId": "00000000-0000-0000-0000-000000000001", "identity_id": "00000000-0000-0000-0000-000000000002", "role": "member", "joined_at": "2024-01-02T00:00:00Z"}`,
 		"bad identity_id":     `{"org_id": "00000000-0000-0000-0000-000000000001", "identity_id": "two", "role": "member", "joined_at": "2024-01-02T00:00:00Z"}`,
@@ -104,14 +105,14 @@ func TestOrgMembersList(t *testing.T) {
 func TestOrgMembersAdd(t *testing.T) {
 	c, got := serve(t, "POST /orgs/{slug}/members", raw(http.StatusCreated, envelope(bareMember)))
 	member, err := c.OrgMembers().Add(t.Context(), "acme", storage.AddMemberRequest{
-		IdentityID: uuid.Nil,
+		IdentityID: memberID,
 		Role:       storage.OrgRoleMember,
 	})
 	require.NoError(t, err)
 	require.Equal(t, wantBareMember(), member)
 	require.Equal(t, http.MethodPost, got.method)
 	require.Equal(t, "/orgs/acme/members", got.requestURI)
-	require.JSONEq(t, `{"identity_id": "00000000-0000-0000-0000-000000000000", "role": "member"}`, got.body)
+	require.JSONEq(t, `{"identity_id": "00000000-0000-0000-0000-000000000002", "role": "member"}`, got.body)
 }
 
 func TestOrgMembersGet(t *testing.T) {
@@ -119,6 +120,7 @@ func TestOrgMembersGet(t *testing.T) {
 	member, err := c.OrgMembers().Get(t.Context(), "acme", memberID)
 	require.NoError(t, err)
 	require.Equal(t, wantSnakeMember(), member)
+	require.Equal(t, http.MethodGet, got.method)
 	require.Equal(t, "/orgs/acme/members/00000000-0000-0000-0000-000000000002", got.requestURI)
 	require.Empty(t, got.body)
 }
@@ -160,6 +162,14 @@ func TestOrgMembersRemoveLastOwnerMatchesErrConflict(t *testing.T) {
 	require.Equal(t, http.StatusConflict, rerr.StatusCode)
 	require.Equal(t, "CONFLICT", rerr.Code)
 	require.Equal(t, "remove_member", rerr.Op)
+}
+
+func TestOrgMembersForbiddenMatchesErrForbidden(t *testing.T) {
+	c, _ := serve(t, "PUT /orgs/{slug}/members/{id}", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, storagetest.Fail(w, http.StatusForbidden, "FORBIDDEN", "not an admin"))
+	})
+	_, err := c.OrgMembers().UpdateRole(t.Context(), "acme", memberID, storage.UpdateMemberRoleRequest{Role: storage.OrgRoleOwner})
+	require.ErrorIs(t, err, remote.ErrForbidden)
 }
 
 func TestOrgMembersRefuseBadSlugsWithNothingSent(t *testing.T) {
