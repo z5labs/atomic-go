@@ -111,13 +111,18 @@ func decodeOp(d *postcard.Decoder) Op {
 			Local:    decodeLocal(d),
 			Encoding: postcard.Option(d, decodeEncoding),
 		}
-	default: // OpReplacement; Variant refuses anything higher.
+	case OpReplacement:
 		return Replacement{
 			Change:      decodeEdgeUpdate(d),
 			Replacement: decodeInsertion(d),
 			Local:       decodeLocal(d),
 			Encoding:    postcard.Option(d, decodeEncoding),
 		}
+	default:
+		// Unreachable while decodedVariants and the cases above agree; a
+		// variant admitted without a case fails rather than being misread.
+		d.Fail(postcard.ErrUnknownVariant)
+		return nil
 	}
 }
 

@@ -23,7 +23,10 @@ func ptr[T any](v T) *T {
 	return &v
 }
 
-var versions = []changefile.Version{changefile.Version1, changefile.Version2, changefile.Version3}
+// versions returns the schema versions a GRAPH payload can come from.
+func versions() []changefile.Version {
+	return []changefile.Version{changefile.Version1, changefile.Version2, changefile.Version3}
+}
 
 // examplePayload is the 97-byte GRAPH payload of
 // docs/remote/change-format/graph.md#example-graph-payload: a FileAdd of
@@ -111,7 +114,7 @@ func TestDecode_Example(t *testing.T) {
 	b := examplePayload()
 	require.Len(t, b, 97)
 
-	for _, v := range versions {
+	for _, v := range versions() {
 		t.Run(fmt.Sprintf("version %d", v), func(t *testing.T) {
 			p, err := Decode(b, v)
 			require.NoError(t, err)
@@ -154,22 +157,36 @@ func TestDecode_EmptyPayload(t *testing.T) {
 }
 
 func TestDecode_KeepsUnknownFlagBits(t *testing.T) {
-	// An Edit inserting with flag 0x03: BLOCK plus the undefined bit 0x02.
 	b := []byte{
-		0x00, 0x01,
-		0x07, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00,
+		0x00, 0x02,
+		// An Edit inserting with flag 0x02, a bit Atomic does not define.
+		0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00,
 		0x00, 0x00, 0x00,
+		// A DirDel whose one edge goes from 0x02 to 0x83 (BLOCK | DELETED
+		// plus 0x02), from {0, 0} to {1, 0..1}, introduced by 1.
+		0x02, 0x01, 0x02, 0x83, 0x00, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x00,
+		0x01, 'd',
 		0x00, 0x00,
 	}
 	p, err := Decode(b, changefile.Version2)
 	require.NoError(t, err)
-	require.Len(t, p.Ops, 1)
+	require.Len(t, p.Ops, 2)
+
 	edit, ok := p.Ops[0].(Edit)
 	require.True(t, ok)
 	ins, ok := edit.Change.(Insertion)
 	require.True(t, ok)
-	require.Equal(t, EdgeFlags(0x03), ins.Flag)
-	require.Equal(t, Block, ins.Flag.Known())
+	require.Equal(t, EdgeFlags(0x02), ins.Flag)
+	require.Equal(t, EdgeFlags(0), ins.Flag.Known())
+
+	del, ok := p.Ops[1].(DirDel)
+	require.True(t, ok)
+	require.Len(t, del.Del.Edges, 1)
+	edge := del.Del.Edges[0]
+	require.Equal(t, EdgeFlags(0x02), edge.Previous)
+	require.Equal(t, EdgeFlags(0x83), edge.Flag)
+	require.Equal(t, EdgeFlags(0), edge.Previous.Known())
+	require.Equal(t, Block|Deleted, edge.Flag.Known())
 
 	out, err := AppendPayload(nil, p)
 	require.NoError(t, err)
@@ -218,6 +235,49 @@ func TestDecode_FileDelFieldOrder(t *testing.T) {
 	out, err := AppendPayload(nil, p)
 	require.NoError(t, err)
 	require.Equal(t, b, out)
+}
+
+func TestDecode_FieldOrder(t *testing.T) {
+	// Each op is written by hand from the CompactGraphOp table, with
+	// distinct values in every field, so that a field order swapped the
+	// same way in the decoder and the encoder still fails here.
+	insA := []byte{0x01, 0x01, 0x02, 0x00, 0x10, 0x03, 0x04, 0x01, 0x05}
+	insAValue := Insertion{Predecessors: []Position{{Change: 1, Pos: 2}}, Flag: Folder, Start: 3, End: 4, Inode: Position{Change: 1, Pos: 5}}
+	insB := []byte{0x00, 0x01, 0x02, 0x06, 0x01, 0x07, 0x08, 0x02, 0x09}
+	insBValue := Insertion{Successors: []Position{{Change: 2, Pos: 6}}, Flag: Block, Start: 7, End: 8, Inode: Position{Change: 2, Pos: 9}}
+	updA := []byte{0x01, 0x01, 0x81, 0x03, 0x01, 0x03, 0x01, 0x02, 0x03, 0x03, 0x04}
+	updAValue := EdgeUpdate{
+		Edges: []NewEdge{{Previous: Block, Flag: Block | Deleted, From: Position{Change: 3, Pos: 1}, To: Node{Change: 3, Start: 1, End: 2}, IntroducedBy: 3}},
+		Inode: Position{Change: 3, Pos: 4},
+	}
+	updB := []byte{0x00, 0x04, 0x05}
+	updBValue := EdgeUpdate{Inode: Position{Change: 4, Pos: 5}}
+
+	testCases := []struct {
+		name string
+		op   []byte
+		want Op
+	}{
+		{name: "DirAdd", op: cat([]byte{0x01}, insA, insB, []byte{0x01, 'd'}), want: DirAdd{AddName: insAValue, AddInode: insBValue, Path: "d"}},
+		{name: "DirDel", op: cat([]byte{0x02}, updA, []byte{0x01, 'd'}), want: DirDel{Del: updAValue, Path: "d"}},
+		{name: "DirUndel", op: cat([]byte{0x03}, updA, []byte{0x01, 'd'}), want: DirUndel{Undel: updAValue, Path: "d"}},
+		{name: "FileUndel", op: cat([]byte{0x05}, updA, []byte{0x01}, updB, []byte{0x01, 'f', 0x01, 0x03}), want: FileUndel{Undel: updAValue, Contents: &updBValue, Path: "f", Encoding: ptr(Latin1)}},
+		{name: "FileMove", op: cat([]byte{0x06}, updA, insA, []byte{0x01, 'g'}), want: FileMove{Del: updAValue, Add: insAValue, Path: "g"}},
+		{name: "Edit EdgeUpdate", op: cat([]byte{0x07, 0x01}, updA, []byte{0x01, 'f', 0x09, 0x00}), want: Edit{Change: updAValue, Local: Local{Path: "f", Line: 9}}},
+		{name: "Replacement", op: cat([]byte{0x08}, updA, insB, []byte{0x01, 'f', 0x0a, 0x01, 0x04}), want: Replacement{Change: updAValue, Replacement: insBValue, Local: Local{Path: "f", Line: 10}, Encoding: ptr(Binary)}},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := cat([]byte{0x00, 0x01}, tc.op, []byte{0x00, 0x00})
+			p, err := Decode(b, changefile.Version2)
+			require.NoError(t, err)
+			require.Equal(t, Payload{Ops: []Op{tc.want}}, p)
+
+			out, err := AppendPayload(nil, p)
+			require.NoError(t, err)
+			require.Equal(t, b, out)
+		})
+	}
 }
 
 func TestAtom_Variants(t *testing.T) {
@@ -359,7 +419,8 @@ func TestDecode_Errors(t *testing.T) {
 		{name: "truncated", b: example[:60], cause: postcard.ErrUnexpectedEnd},
 		{name: "no content_end", b: example[:96], cause: postcard.ErrUnexpectedEnd},
 		{name: "path not UTF-8", b: []byte{0x01, 0xff, 0x00, 0x00, 0x00}, cause: postcard.ErrBadUTF8},
-		{name: "bad option tag", b: cat(example[:2], []byte{0x00}, example[3:25], []byte{0x02}), cause: postcard.ErrBadOption},
+		// Offset 25 is FileAdd's contents option tag.
+		{name: "bad option tag", b: cat(example[:25], []byte{0x02}), cause: postcard.ErrBadOption},
 		{name: "unknown encoding", b: []byte{
 			0x00, 0x01,
 			0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
