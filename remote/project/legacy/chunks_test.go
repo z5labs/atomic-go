@@ -236,6 +236,30 @@ func TestChunkManifestContentType(t *testing.T) {
 	}
 }
 
+func TestChunkManifestDecodesTheContentEncoding(t *testing.T) {
+	for _, tc := range []struct {
+		coding string
+		encode func(*testing.T, string) string
+	}{
+		{coding: "gzip", encode: gzipped},
+		{coding: "deflate", encode: deflated},
+		{coding: "zstd", encode: zstdEncoded},
+	} {
+		t.Run(tc.coding, func(t *testing.T) {
+			body := tc.encode(t, manifestExample)
+			require.NotEqual(t, manifestExample, body)
+			c, _ := serve(t, map[string]reply{manifestQuery: {body: body, header: []string{
+				"Content-Type", "application/json",
+				"Content-Encoding", tc.coding,
+			}}})
+
+			m, err := c.ChunkManifest(context.Background(), changeHash)
+			require.NoError(t, err)
+			require.Equal(t, &legacy.ChunkManifest{Entries: exampleEntries}, m)
+		})
+	}
+}
+
 func TestChunkManifestWithoutAContentTypeIsNone(t *testing.T) {
 	// A RoundTripper, since net/http's server sniffs a Content-Type for a
 	// response that sets none.

@@ -254,9 +254,15 @@ func (c *Client) ChunkManifest(ctx context.Context, h ident.Hash) (*ChunkManifes
 	return m, nil
 }
 
-// parseChunkManifest parses a chunk manifest's JSON as the Rust client's
-// serde derive does: every field required, names matched exactly, unknown
-// members ignored and a known member given twice refused.
+// parseChunkManifest parses a chunk manifest's JSON with the rules of the
+// Rust client's serde derive: every field required, names matched exactly,
+// unknown members ignored and a known member given twice refused.
+//
+// It accepts and refuses the same bodies, but its errors are not serde's.
+// Members are checked in the struct's declaration order, not the
+// document's, so a body with more than one fault can be refused for a
+// different one first, and a malformed value is described in
+// encoding/json's words.
 func parseChunkManifest(data []byte) (*ChunkManifest, error) {
 	// Unmarshal into a RawMessage first: it checks the whole body is one
 	// JSON value with nothing after it.
@@ -294,8 +300,8 @@ func parseChunkManifestEntry(raw json.RawMessage) (ChunkManifestEntry, error) {
 	if err != nil {
 		return ChunkManifestEntry{}, err
 	}
-	// The members are read in the struct's declaration order, so that a
-	// missing one is named as serde would name it.
+	// The members are read in the struct's declaration order, so that of
+	// several missing members the first declared is named.
 	var e ChunkManifestEntry
 	if e.Index, err = u32Field(obj, "index"); err != nil {
 		return ChunkManifestEntry{}, err
