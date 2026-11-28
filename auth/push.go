@@ -161,28 +161,40 @@ func resolveSigner(ctx context.Context, store PushStore, p serverurl.Project, se
 		}
 		return identity.Identity{}, nil, &AuthenticationError{Remote: p.String(), Issue: NoIdentity}
 	}
-	s, err := loadSigner(ctx, store, id)
+	s, err := store.Signer(ctx, id.PublicKey.ID())
+	if err != nil && ctx.Err() != nil {
+		return identity.Identity{}, nil, ctx.Err()
+	}
+	if err == nil {
+		err = checkSigner(s, id)
+	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return identity.Identity{}, nil, ctx.Err()
-		}
 		return identity.Identity{}, nil, &AuthenticationError{Remote: p.String(), Issue: KeypairUnavailable, Name: id.Name, Err: err}
 	}
 	return id, s, nil
 }
 
-// loadSigner loads id's signer from keys and checks that it holds id's key.
-// A nil signer, and one holding another key, are errors wrapping
-// [ErrKeyUnavailable]; an error from keys is returned as it is.
+// loadSigner loads id's signer from keys and checks it with checkSigner. An
+// error from keys is returned as it is.
 func loadSigner(ctx context.Context, keys KeyLoader, id identity.Identity) (identity.Signer, error) {
 	s, err := keys.Signer(ctx, id.PublicKey.ID())
-	switch {
-	case err != nil:
+	if err != nil {
 		return nil, err
-	case s == nil:
-		return nil, fmt.Errorf("%w: the key loader returned no signer", ErrKeyUnavailable)
-	case s.PublicKey() != id.PublicKey:
-		return nil, fmt.Errorf("%w: the loaded key is not the identity's", ErrKeyUnavailable)
+	}
+	if err := checkSigner(s, id); err != nil {
+		return nil, err
 	}
 	return s, nil
+}
+
+// checkSigner reports an error wrapping [ErrKeyUnavailable] when s is nil or
+// holds a key other than id's.
+func checkSigner(s identity.Signer, id identity.Identity) error {
+	switch {
+	case s == nil:
+		return fmt.Errorf("%w: the key loader returned no signer", ErrKeyUnavailable)
+	case s.PublicKey() != id.PublicKey:
+		return fmt.Errorf("%w: the loaded key is not the identity's", ErrKeyUnavailable)
+	}
+	return nil
 }
