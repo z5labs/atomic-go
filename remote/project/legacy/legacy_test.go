@@ -554,6 +554,10 @@ var calls = []call{
 		_, _, err := c.ViewManifest(context.Background(), "dev")
 		return err
 	}},
+	{name: "DownloadChangeLayers", op: "download_change_layers", query: "change=" + changeHashText + "&layers=graph,content", do: func(c *legacy.Client) error {
+		_, err := c.DownloadChangeLayers(context.Background(), changeHash, legacy.ThinPull)
+		return err
+	}},
 }
 
 func TestNotFoundKinds(t *testing.T) {
@@ -567,6 +571,7 @@ func TestNotFoundKinds(t *testing.T) {
 		{name: "Changelist", kind: remote.KindViewNotFound, subject: "dev", msg: "View not found: dev"},
 		{name: "ID", kind: remote.KindViewNotFound, subject: "dev", msg: "View not found: dev"},
 		{name: "DownloadTag", kind: remote.KindTagNotFound, subject: "STATE", msg: "Tag not found for state: STATE"},
+		{name: "DownloadChangeLayers", kind: remote.KindChangeNotFound, subject: changeHashText, msg: "Change not found: " + changeHashText},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cl := callNamed(t, tc.name)
