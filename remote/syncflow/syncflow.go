@@ -20,12 +20,16 @@
 // implements over its own repository. [VerifyPush] checks the advertisement
 // re-read after the push against the plan, returning a [VerifyError].
 //
-// Nothing here touches the network. A remote is assumed to send every
+// [Push] drives a whole push through those steps against a [Remote], such
+// as a *[project.Client]: advertise, plan, build, bind, send and verify,
+// reporting a failed step as a [StageError].
+//
+// Nothing else here touches the network. A remote is assumed to send every
 // ancestor's ref and snapshot on a full pull, as Atomic's test peer does;
 // one it leaves out is an error, not a guess.
 //
-// The flows are documented in docs/remote/flows.md, under Request 1: ref
-// advertisement, Planning what to send, Building the pack, Request 4:
+// The flows are documented in docs/remote/flows.md, under Push sequence,
+// Request 1: ref advertisement, Planning what to send, Building the pack, Request 4:
 // verify and Reading the chain and saving changes, and the per-family keys
 // in docs/remote/endpoints/project.md, under ObjectRecord.
 package syncflow
