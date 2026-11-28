@@ -179,8 +179,13 @@ func putAuthor(e *postcard.Encoder, a change.Author) {
 // The metadata, the author's identity and the timestamp's fraction of a
 // second are not hashed. The timestamp is the instant r.TimestampText names
 // when it is set, as [Record.MarshalPostcard] writes it, and r.Timestamp
-// otherwise. TimestampText that does not parse is not one MarshalPostcard
-// would write; ContentHash then falls back to r.Timestamp.
+// otherwise.
+//
+// ContentHash never fails, so its result means something only for a record
+// [Record.MarshalPostcard] accepts. For one it refuses, the hash is still
+// computed but names no record Atomic could store: TimestampText that does
+// not parse falls back to r.Timestamp, and a Kind Atomic does not declare
+// is written as its low byte.
 func (r Record) ContentHash() ident.Hash {
 	var b bytes.Buffer
 	b.WriteString(r.Name)
@@ -203,7 +208,8 @@ func (r Record) ContentHash() ident.Hash {
 }
 
 // Key returns the key Atomic stores r's Tag object under: the base32 text
-// of [Record.ContentHash].
+// of [Record.ContentHash]. Like ContentHash, it means something only for a
+// record [Record.MarshalPostcard] accepts.
 func (r Record) Key() string {
 	return r.ContentHash().String()
 }

@@ -362,10 +362,10 @@ func TestMarshalRefuses(t *testing.T) {
 			r.Timestamp = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
 		},
 	}
-	for name, change := range cases {
+	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			r := goldenRecord()
-			change(&r)
+			mutate(&r)
 			b, err := r.MarshalPostcard()
 			require.ErrorIs(t, err, tags.ErrInvalidRecord)
 			require.Nil(t, b)
