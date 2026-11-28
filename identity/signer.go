@@ -89,7 +89,8 @@ type cryptoSigner struct {
 // The Signer calls cs.Sign with a nil random source and crypto.Hash(0),
 // which asks for plain Ed25519 over the whole message. Ed25519 is
 // deterministic, so no randomness is involved. A signature that is not
-// [SignatureSize] bytes is an error.
+// [SignatureSize] bytes, or that does not verify against the key Public
+// returned, is an error.
 func FromCryptoSigner(cs crypto.Signer) (Signer, error) {
 	if cs == nil {
 		return nil, fmt.Errorf("%w: nil crypto.Signer", ErrNotEd25519)
@@ -118,6 +119,9 @@ func (s cryptoSigner) Sign(ctx context.Context, msg []byte) ([]byte, error) {
 	}
 	if len(sig) != SignatureSize {
 		return nil, fmt.Errorf("identity: sign: signature is %d bytes, want %d", len(sig), SignatureSize)
+	}
+	if !s.pub.Verify(msg, sig) {
+		return nil, fmt.Errorf("identity: sign: signature does not verify against %s", s.pub)
 	}
 	return sig, nil
 }

@@ -153,7 +153,7 @@ func TestFromCryptoSignerOptions(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, fake.called)
 	require.Nil(t, fake.rand)
-	require.Equal(t, crypto.Hash(0), fake.opts.HashFunc())
+	require.Equal(t, crypto.Hash(0), fake.opts)
 }
 
 func TestFromCryptoSignerFailure(t *testing.T) {
@@ -169,6 +169,30 @@ func TestFromCryptoSignerFailure(t *testing.T) {
 	require.NoError(t, err)
 	_, err = s.Sign(context.Background(), []byte("msg"))
 	require.Error(t, err)
+}
+
+func TestFromCryptoSignerKeyDisagrees(t *testing.T) {
+	// The crypto.Signer reports TEST 2's key but signs with TEST 1's.
+	signing := ed25519.NewKeyFromSeed(mustHex(t, signatureVectors[0].seed))
+	reported := ed25519.NewKeyFromSeed(mustHex(t, signatureVectors[1].seed)).Public()
+	s, err := identity.FromCryptoSigner(mismatchedCryptoSigner{pub: reported, priv: signing})
+	require.NoError(t, err)
+
+	sig, err := s.Sign(context.Background(), []byte("msg"))
+	require.Error(t, err)
+	require.Nil(t, sig)
+}
+
+// mismatchedCryptoSigner reports pub but signs with priv.
+type mismatchedCryptoSigner struct {
+	pub  crypto.PublicKey
+	priv ed25519.PrivateKey
+}
+
+func (m mismatchedCryptoSigner) Public() crypto.PublicKey { return m.pub }
+
+func (m mismatchedCryptoSigner) Sign(rand io.Reader, msg []byte, opts crypto.SignerOpts) ([]byte, error) {
+	return m.priv.Sign(rand, msg, opts)
 }
 
 // fakeCryptoSigner is a crypto.Signer with a fixed public key that returns

@@ -54,7 +54,8 @@ func RegistrationMessage(username, publicKey, timestamp string) []byte {
 // Only a [TypeUser] identity can register, because registering creates a
 // tenant; any other type is an error wrapping [ErrNotRegistrable]. s must
 // sign with id's key, or the result is an error wrapping [ErrKeyMismatch].
-// An error from s is returned wrapped. id.Email of "" becomes a null email.
+// An error from s is returned wrapped, and so is a signature that does not
+// verify against id's key. id.Email of "" becomes a null email.
 func SignRegistration(ctx context.Context, id Identity, s Signer, at time.Time) (Registration, error) {
 	if id.Type != TypeUser {
 		return Registration{}, fmt.Errorf("%w: %q is a %q identity, not %q", ErrNotRegistrable, id.Name, string(id.Type), string(TypeUser))
@@ -76,12 +77,16 @@ func SignRegistration(ctx context.Context, id Identity, s Signer, at time.Time) 
 		r.Email = &email
 	}
 
-	sig, err := s.Sign(ctx, RegistrationMessage(r.Username, r.PublicKey.String(), r.Timestamp))
+	msg := RegistrationMessage(r.Username, r.PublicKey.String(), r.Timestamp)
+	sig, err := s.Sign(ctx, msg)
 	if err != nil {
 		return Registration{}, fmt.Errorf("identity: sign registration: %w", err)
 	}
 	if len(sig) != SignatureSize {
 		return Registration{}, fmt.Errorf("identity: sign registration: signature is %d bytes, want %d", len(sig), SignatureSize)
+	}
+	if !id.PublicKey.Verify(msg, sig) {
+		return Registration{}, fmt.Errorf("identity: sign registration: signature does not verify against %s", id.PublicKey)
 	}
 	r.Signature = ident.EncodeBase32(sig)
 	return r, nil

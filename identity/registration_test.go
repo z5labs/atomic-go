@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,10 @@ func TestSignRegistration(t *testing.T) {
 	require.NotNil(t, r.Email)
 	require.Equal(t, "alice@example.com", *r.Email)
 
+	// 64 bytes of unpadded base32 is 103 upper-case characters.
+	require.Len(t, r.Signature, 103)
+	require.NotContains(t, r.Signature, "=")
+	require.Equal(t, strings.ToUpper(r.Signature), r.Signature)
 	sig, err := ident.DecodeBase32Strict(r.Signature, identity.SignatureSize)
 	require.NoError(t, err)
 	msg := identity.RegistrationMessage("alice", id.PublicKey.String(), "2026-11-24T09:30:00Z")
@@ -123,6 +128,12 @@ func TestSignRegistrationSignerFails(t *testing.T) {
 
 	_, err := identity.SignRegistration(context.Background(), id, failingSigner{pub: s.PublicKey(), err: errSign}, time.Time{})
 	require.ErrorIs(t, err, errSign)
+}
+
+func TestSignRegistrationBadSignature(t *testing.T) {
+	id, s := testUser(t)
+	_, err := identity.SignRegistration(context.Background(), id, failingSigner{pub: s.PublicKey(), sig: make([]byte, identity.SignatureSize)}, time.Time{})
+	require.Error(t, err)
 }
 
 func TestSignRegistrationShortSignature(t *testing.T) {
