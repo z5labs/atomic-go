@@ -1,6 +1,9 @@
 package legacy_test
 
 import (
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -18,6 +21,7 @@ import (
 	"github.com/z5labs/atomic-go/remote/remotetest"
 	"github.com/z5labs/atomic-go/remote/serverurl"
 	"github.com/z5labs/atomic-go/remote/views"
+	"github.com/z5labs/atomic-go/zstdframe"
 )
 
 const (
@@ -718,16 +722,88 @@ func TestReadFailure(t *testing.T) {
 	}
 }
 
+// newClientWithMaxBody returns a Client whose requests s answers, reading
+// at most maxBody bytes of a body.
+func newClientWithMaxBody(t *testing.T, s *server, maxBody int64) *legacy.Client {
+	t.Helper()
+	return legacy.NewWithMaxBody(projectURL(t), remotetest.Client(s), remotetest.NewLogRecorder().Logger(), clientVersion, maxBody)
+}
+
 func TestBodyTooLarge(t *testing.T) {
-	c, _ := serve(t, map[string]reply{"view=dev&id": {body: "0123456789"}})
-	legacy.SetMaxBody(c, 9)
+	s := &server{routes: map[string]reply{"view=dev&id": {body: "0123456789"}}}
+	c := newClientWithMaxBody(t, s, 9)
 	_, err := c.ID(context.Background(), "dev")
 	re := requireRemoteError(t, err, remote.KindProtocol)
 	require.EqualError(t, err, "Protocol error: response body is larger than 9 bytes")
 	require.Equal(t, "get_id", re.Op)
 
-	legacy.SetMaxBody(c, 10)
+	c = newClientWithMaxBody(t, s, 10)
 	id, err := c.ID(context.Background(), "dev")
 	require.NoError(t, err)
 	require.Equal(t, "0123456789", id)
+}
+
+// stateBody is a state response long enough for compression to change it.
+var stateBody = "42 ABC123 DEF456 SID32" + strings.Repeat(" ignored", 64)
+
+func gzipped(t *testing.T, s string) string {
+	t.Helper()
+	var b bytes.Buffer
+	w := gzip.NewWriter(&b)
+	_, err := io.WriteString(w, s)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return b.String()
+}
+
+func deflated(t *testing.T, s string) string {
+	t.Helper()
+	var b bytes.Buffer
+	w := zlib.NewWriter(&b)
+	_, err := io.WriteString(w, s)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	return b.String()
+}
+
+func zstdEncoded(t *testing.T, s string) string {
+	t.Helper()
+	enc, err := zstdframe.NewEncoder(3)
+	require.NoError(t, err)
+	defer enc.Close()
+	return string(enc.Compress(nil, []byte(s)))
+}
+
+func TestReadsDecodeTheContentEncoding(t *testing.T) {
+	for _, tc := range []struct {
+		coding string
+		encode func(*testing.T, string) string
+	}{
+		{coding: "gzip", encode: gzipped},
+		{coding: "deflate", encode: deflated},
+		{coding: "zstd", encode: zstdEncoded},
+	} {
+		t.Run(tc.coding, func(t *testing.T) {
+			body := tc.encode(t, stateBody)
+			require.NotEqual(t, stateBody, body)
+			c, _ := serve(t, map[string]reply{"view=dev&state=": {body: body, header: []string{"Content-Encoding", tc.coding}}})
+
+			st, err := c.State(context.Background(), "dev")
+			require.NoError(t, err)
+			require.Equal(t, legacy.State{Position: 42, Merkle: "ABC123", TagMerkle: "DEF456", SetID: "SID32"}, st)
+		})
+	}
+}
+
+func TestZstdBodyPastTheLimit(t *testing.T) {
+	body := zstdEncoded(t, stateBody)
+	s := &server{routes: map[string]reply{"view=dev&state=": {body: body, header: []string{"Content-Encoding", "zstd"}}}}
+	c := newClientWithMaxBody(t, s, 32)
+
+	_, err := c.State(context.Background(), "dev")
+	re := requireRemoteError(t, err, remote.KindProtocol)
+	require.ErrorIs(t, err, zstdframe.ErrLimit)
+	require.True(t, strings.HasPrefix(re.Message, "failed to decode response body: "), re.Message)
+	require.Equal(t, "get_state", re.Op)
+	require.False(t, re.Retryable())
 }

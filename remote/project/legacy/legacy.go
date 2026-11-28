@@ -131,16 +131,23 @@ func New(u serverurl.Project, doer project.Doer, logger *slog.Logger, clientVers
 	if o.userAgent != nil {
 		ua = *o.userAgent
 	}
+	return newClient(u, doer, logger, clientVersion, ua, maxBodySize), nil
+}
+
+// newClient returns a Client whose arguments New has already checked,
+// reading at most maxBody bytes of a body, whether sent as is or inflated
+// from a zstd Content-Encoding.
+func newClient(u serverurl.Project, doer project.Doer, logger *slog.Logger, clientVersion, ua string, maxBody int64) *Client {
 	return &Client{
 		url: u,
 		requester: wire.NewRequester(doer, logger, wire.Profile{
 			UserAgent:     ua,
 			ClientVersion: clientVersion,
 			Header:        http.Header{"Accept-Encoding": {acceptEncoding}},
-			MaxDecoded:    maxBodySize,
+			MaxDecoded:    maxBody,
 		}),
-		maxBody: maxBodySize,
-	}, nil
+		maxBody: maxBody,
+	}
 }
 
 // URL returns the project URL the Client sends to.
