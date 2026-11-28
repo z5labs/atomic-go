@@ -203,11 +203,12 @@ func TestZeroDocument(t *testing.T) {
 	require.ErrorIs(t, err, projectidentity.ErrInvalid)
 
 	_, ok, err := d.Issuer()
-	require.NoError(t, err)
+	require.ErrorIs(t, err, projectidentity.ErrInvalid)
 	require.False(t, ok)
 
 	err = d.VerifyProof(signerFromHex(t, seed1).PublicKey())
-	require.ErrorIs(t, err, canonical.ErrProof)
+	require.ErrorIs(t, err, projectidentity.ErrInvalid)
+	require.NotErrorIs(t, err, canonical.ErrProof)
 
 	_, err = projectidentity.Sign(context.Background(), d, signerFromHex(t, seed1))
 	require.ErrorIs(t, err, projectidentity.ErrInvalid)

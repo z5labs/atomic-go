@@ -47,7 +47,7 @@ func TestNewProjectID(t *testing.T) {
 
 	t.Run("an empty reader is an EOF", func(t *testing.T) {
 		_, err := projectidentity.NewProjectID(bytes.NewReader(nil))
-		require.Error(t, err)
+		require.ErrorIs(t, err, io.EOF)
 	})
 
 	t.Run("a read error is returned wrapped", func(t *testing.T) {

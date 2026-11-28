@@ -32,9 +32,9 @@ const (
 // Document is untrusted until [Document.VerifyProof] has succeeded on it.
 //
 // The zero Document holds no document: [Document.Bytes] returns nil, and
-// [Document.MarshalJSON], [Document.ProjectID], [Document.Hash] and [Sign]
-// refuse it with an error wrapping [ErrInvalid], so a missing document is
-// never sent, hashed or signed as {}.
+// every other method, and [Sign], refuses it with an error wrapping
+// [ErrInvalid], so a missing document is never sent, hashed, signed or
+// read as an unsigned one.
 type Document struct {
 	raw []byte
 	doc canonical.Document
@@ -109,13 +109,17 @@ func (d Document) ProjectID() (ProjectID, error) {
 // form is accepted.
 //
 // It returns false and no error when the document has no atomic:issuer or
-// it is null, as an unsigned document has none. An atomic:issuer that is
-// not an object, an object with no string @id, and an @id that is not a DID
-// are errors wrapping [ErrInvalid], the last [identity.ErrInvalidDID] too.
+// it is null, as an unsigned document has none. The zero Document, an
+// atomic:issuer that is not an object, an object with no string @id, and an
+// @id that is not a DID are errors wrapping [ErrInvalid], the last
+// [identity.ErrInvalidDID] too.
 //
 // The issuer is a claim the document makes, not a check: nothing here
 // compares it with the key [Document.VerifyProof] is given.
 func (d Document) Issuer() (identity.DID, bool, error) {
+	if err := d.check(); err != nil {
+		return identity.DID{}, false, err
+	}
 	v, ok := d.doc.Member(memberIssuer)
 	if !ok || v.Kind() == 'n' {
 		return identity.DID{}, false, nil
@@ -165,11 +169,15 @@ func (d Document) Hash() (ident.Hash, error) {
 // [canonical.VerifyProof] does: the proof is present and well formed, its
 // @type, cryptosuite and proofPurpose are Atomic's, its signature verifies
 // over the canonical bytes of the document without its proof, and its
-// verificationMethod names key. Every failure wraps [canonical.ErrProof].
+// verificationMethod names key. Every failure wraps [canonical.ErrProof],
+// except that the zero Document is an error wrapping [ErrInvalid].
 //
 // It checks the signature and nothing the document says: not its @type,
 // and not that atomic:issuer names key (see [Document.Issuer]).
 func (d Document) VerifyProof(key identity.PublicKey) error {
+	if err := d.check(); err != nil {
+		return err
+	}
 	if err := canonical.VerifyProof(d.doc, key); err != nil {
 		return fmt.Errorf("projectidentity: verify proof: %w", err)
 	}
@@ -203,7 +211,7 @@ func Sign(ctx context.Context, d Document, signer identity.Signer) (Document, er
 		return Document{}, fmt.Errorf("%w: sign: nil signer", ErrInvalid)
 	}
 	if err := d.check(); err != nil {
-		return Document{}, fmt.Errorf("projectidentity: sign: %w", err)
+		return Document{}, err
 	}
 	key := signer.PublicKey()
 	doc, err := d.doc.With(memberIssuer, issuer{ID: key.AtomicDID().String()})

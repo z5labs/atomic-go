@@ -21,8 +21,8 @@ type ProjectID [ident.Size]byte
 // reader in tests.
 //
 // A nil rand is an error wrapping [ErrInvalid]. A rand that yields fewer
-// than 32 bytes is an error wrapping the read's error, [io.ErrUnexpectedEOF]
-// for a short read.
+// than 32 bytes is an error wrapping the read's error: [io.EOF] when it
+// yields none, and [io.ErrUnexpectedEOF] for a short read.
 func NewProjectID(rand io.Reader) (ProjectID, error) {
 	if rand == nil {
 		return ProjectID{}, fmt.Errorf("%w: new project id: nil random source", ErrInvalid)
