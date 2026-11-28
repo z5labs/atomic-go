@@ -19,6 +19,11 @@ type readOptions struct {
 // Change::deserialize does. Without it a file with bytes after its trailer
 // fails with [ErrTrailingBytes], as VerifiedChange::from_bytes does. The
 // trailing bytes are never part of [File.Bytes].
+//
+// VerifiedChange::from_bytes refuses trailing bytes only after it has
+// validated the decoded change. A caller that validates the change itself
+// and wants that error order passes AllowTrailingBytes, validates, and then
+// refuses a file whose len(f.Bytes()) is less than len(b).
 func AllowTrailingBytes() ReadOption {
 	return func(o *readOptions) { o.allowTrailing = true }
 }
@@ -195,7 +200,8 @@ func (r *Reader) Table() HashTable {
 }
 
 // Next reads the next section and returns it, with its Payload
-// decompressed, and true. It returns false and a nil error once the header's
+// decompressed, and true. The Section is the one [Reader.Finish] puts in
+// [File.Sections], sharing its slices. It returns false and a nil error once the header's
 // count of sections has been read, or when the file ends exactly where a
 // section would start; [Reader.Finish] then checks the trailer.
 //
@@ -333,7 +339,7 @@ func (r *Reader) checkChunk(s Section) error {
 	if uint64(s.Chunk.Index) != want {
 		return formatError(ErrChunkMismatch, SectionContent, s.Offset, fmt.Sprintf("chunk_index is %d, expected %d", s.Chunk.Index, want))
 	}
-	if s.Payload == nil {
+	if r.dec == nil {
 		return nil
 	}
 	if uint64(len(s.Payload)) != uint64(s.Chunk.UncompressedLen) {
@@ -395,7 +401,7 @@ func (r *Reader) finish() (*File, error) {
 	end := r.pos + TrailerSize
 	if r.header.Version == Version1 {
 		if r.counts[SectionHeader.Order()] == 0 {
-			return nil, formatError(ErrInvalidHeader, 0, -1, "missing legacy version 1 HEADER section")
+			return nil, formatError(ErrInvalidHeader, SectionHeader, -1, "missing legacy version 1 HEADER section")
 		}
 	} else if err := r.checkManifest(); err != nil {
 		return nil, err

@@ -315,6 +315,12 @@ func TestTruncatedTableAndTrailer(t *testing.T) {
 
 	_, err = changefile.Verify(changefixture.WorkedExample()[:3])
 	requireFormatError(t, err, changefile.ErrTruncated, 3)
+
+	// The magic is checked after 4 bytes, before the header's length.
+	_, err = changefile.Verify([]byte("XXXXabcd"))
+	requireFormatError(t, err, changefile.ErrInvalidMagic, 0)
+	_, err = changefile.Verify([]byte{1, 0, 0, 0, 0xab})
+	requireFormatError(t, err, changefile.ErrLegacyFormat, 0)
 }
 
 func TestAppendedByte(t *testing.T) {
@@ -494,11 +500,23 @@ func TestSectionManifest(t *testing.T) {
 		require.Equal(t, changefile.SectionGraph, fe.Section)
 	})
 
-	t.Run("version 2 checks the flags", func(t *testing.T) {
-		b := build(t, changefile.FileHeader{Version: changefile.Version2, Flags: changefile.FlagUnhashed}, header, deps, graph)
+	t.Run("version 2 checks the PROVENANCE flag", func(t *testing.T) {
+		// FlagProvenance frames the CONTENT section, which stands where
+		// PROVENANCE should be.
+		b := build(t, changefile.FileHeader{Version: changefile.Version2, Flags: changefile.FlagProvenance}, header, deps, content)
 		_, err := changefile.Verify(b)
 		fe := requireFormatError(t, err, changefile.ErrInvalidHeader, -1)
-		require.Equal(t, changefile.SectionGraph, fe.Section)
+		require.Equal(t, changefile.SectionProvenance, fe.Section)
+	})
+
+	t.Run("version 2 checks the UNHASHED flag", func(t *testing.T) {
+		// The SIGNATURE count is not compared, so only the UNHASHED row
+		// can fail.
+		sig := section(changefile.SectionSignature, []byte("sig"))
+		b := build(t, changefile.FileHeader{Version: changefile.Version2, Flags: changefile.FlagUnhashed}, header, deps, sig)
+		_, err := changefile.Verify(b)
+		fe := requireFormatError(t, err, changefile.ErrInvalidHeader, -1)
+		require.Equal(t, changefile.SectionUnhashed, fe.Section)
 	})
 
 	t.Run("version 2 checks HEADER", func(t *testing.T) {
@@ -518,7 +536,8 @@ func TestSectionManifest(t *testing.T) {
 	t.Run("version 1 requires HEADER", func(t *testing.T) {
 		b := build(t, changefile.FileHeader{Version: changefile.Version1}, deps, deps)
 		_, err := changefile.Verify(b)
-		requireFormatError(t, err, changefile.ErrInvalidHeader, -1)
+		fe := requireFormatError(t, err, changefile.ErrInvalidHeader, -1)
+		require.Equal(t, changefile.SectionHeader, fe.Section)
 	})
 
 	t.Run("signed and unhashed sections", func(t *testing.T) {
@@ -645,9 +664,10 @@ func TestErrorsAreSticky(t *testing.T) {
 	r, err := changefile.NewReader(b, newDecoder(t))
 	require.NoError(t, err)
 	var nextErr error
-	for nextErr == nil {
-		_, _, nextErr = r.Next()
+	for ok := true; nextErr == nil && ok; {
+		_, ok, nextErr = r.Next()
 	}
+	require.Error(t, nextErr)
 	_, ok, err := r.Next()
 	require.False(t, ok)
 	require.Equal(t, nextErr, err)
