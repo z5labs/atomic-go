@@ -27,6 +27,7 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -107,6 +108,10 @@ func FromValue(v any) (Document, error) {
 }
 
 // Canonical returns the document's RFC 8785 canonical bytes.
+//
+// Every name and member is admitted on the way in, so the error is not
+// expected; it is [jsontext.Value.Canonicalize]'s, returned rather than
+// hidden.
 func (d Document) Canonical() ([]byte, error) {
 	b := []byte{'{'}
 	first := true
@@ -186,9 +191,13 @@ func (d Document) Decode(name string, v any) error {
 // replacing any member of that name. v is marshalled with encoding/json/v2,
 // except that a [jsontext.Value] is taken as written, and the result is
 // admitted as a member value one level below the document's top-level
-// object. A value admission refuses is an error wrapping [ErrNotAdmitted].
+// object. A name that is not valid UTF-8, or a value admission refuses, is
+// an error wrapping [ErrNotAdmitted].
 // The receiver is unchanged either way.
 func (d Document) With(name string, v any) (Document, error) {
+	if !utf8.ValidString(name) {
+		return Document{}, fmt.Errorf("%w: member name %q is not valid UTF-8", ErrNotAdmitted, name)
+	}
 	var b []byte
 	if raw, ok := v.(jsontext.Value); ok {
 		b = raw
@@ -230,12 +239,23 @@ func (d Document) Without(names ...string) Document {
 }
 
 // MarshalJSON returns the document's canonical bytes, as [Document.Canonical].
+//
+// Sign the bytes [Document.Canonical] returns, never a marshal of a value
+// that encloses the document: an enclosing marshal may rewrite these bytes.
+// encoding/json (v1), for one, escapes <, > and & in a MarshalJSON result,
+// which encoding/json/v2 does not.
 func (d Document) MarshalJSON() ([]byte, error) {
 	return d.Canonical()
 }
 
 // UnmarshalJSON admits b, as [Admit], and replaces d with the result. d is
 // unchanged when admission fails.
+//
+// JSON null is refused like any other value that is not an object, rather
+// than leaving d unchanged as encoding/json's convention would: a null is
+// not a document, and reading it as an empty one would let a missing
+// document be signed or verified as {}. Use a *Document field where null is
+// allowed.
 func (d *Document) UnmarshalJSON(b []byte) error {
 	doc, err := Admit(b)
 	if err != nil {

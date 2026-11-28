@@ -206,6 +206,9 @@ func TestWithRefuses(t *testing.T) {
 		// arrays make depth 129.
 		{name: "depth 129", v: jsontext.Value(strings.Repeat("[", 128) + strings.Repeat("]", 128))},
 	}
+	_, err = d.With("\xff", 1)
+	require.ErrorIs(t, err, canonical.ErrNotAdmitted)
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := d.With("b", tc.v)
@@ -262,6 +265,9 @@ func TestJSONRoundTrip(t *testing.T) {
 	err = json.Unmarshal([]byte(`{"doc":{"a":1.5}}`), &refused)
 	require.ErrorIs(t, err, canonical.ErrNotAdmitted)
 	require.Equal(t, 0, refused.Doc.Len())
+
+	var null canonical.Document
+	require.ErrorIs(t, null.UnmarshalJSON([]byte(`null`)), canonical.ErrNotAdmitted)
 }
 
 func TestZeroDocumentIsEmptyObject(t *testing.T) {
