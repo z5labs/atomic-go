@@ -341,7 +341,8 @@ func (k PromptKind) String() string {
 //
 // The zero Prompt is [PromptHashed] with the zero hash, because that is
 // variant 0. A record with no prompt information sets Kind to
-// [PromptNone].
+// [PromptNone]; [AppendPayload] refuses a Hashed prompt with the zero
+// hash, so a prompt left unset is not written as a hash.
 type Prompt struct {
 	// Kind says which of the fields below holds the prompt.
 	Kind PromptKind

@@ -111,7 +111,8 @@ func DecodeAs(b []byte, l Layout) ([]Record, error) {
 // It fails, with an error wrapping [ErrInvalidRecord], and returns dst
 // unchanged, when a record holds a kind Atomic does not declare, a
 // [Vendor.Name] on a vendor other than [VendorOther], a [Tool.Name] on
-// [ToolAPI] or [ToolChat], a [Prompt] field its Kind does not carry, or a
+// [ToolAPI] or [ToolChat], a [Prompt] field its Kind does not carry, a
+// [PromptHashed] prompt with the zero hash (the zero Prompt), or a
 // string that is not valid UTF-8. Each of those would otherwise be lost or
 // unreadable.
 func AppendPayload(dst []byte, records []Record) ([]byte, error) {
@@ -185,6 +186,12 @@ func (p Prompt) check() error {
 	}
 	if p.Kind >= promptVariants {
 		return invalid("prompt %s is not one Atomic declares", p.Kind)
+	}
+	if p.Kind == PromptHashed && p.Hash.IsZero() {
+		// The zero Prompt is Hashed with the zero hash. Hash::of never
+		// yields the zero hash, so this is a prompt left unset, not one
+		// that was hashed.
+		return invalid("a Hashed prompt has the zero hash; set Kind to PromptNone for no prompt")
 	}
 	if p.Kind != PromptHashed && !p.Hash.IsZero() {
 		return invalid("a %s prompt carries no hash", p.Kind)

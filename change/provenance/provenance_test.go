@@ -2,7 +2,6 @@ package provenance
 
 import (
 	"encoding/binary"
-	"errors"
 	"math"
 	"testing"
 	"time"
@@ -274,7 +273,7 @@ func requireDecodeError(t *testing.T, payload []byte, want error, offset int64) 
 	require.ErrorIs(t, err, ErrMalformed)
 	require.ErrorIs(t, err, want)
 	var pe *postcard.Error
-	require.True(t, errors.As(err, &pe), "%v is not a *postcard.Error", err)
+	require.ErrorAs(t, err, &pe)
 	require.Equal(t, offset, pe.Offset)
 }
 
@@ -365,6 +364,7 @@ func TestAppendPayloadRefusesInvalidRecords(t *testing.T) {
 		"unknown suggestion type":   func(r *Record) { r.SuggestionType = suggestionVariants },
 		"unknown prompt":            func(r *Record) { r.Prompt.Kind = promptVariants },
 		"hash on a None prompt":     func(r *Record) { r.Prompt.Hash = hashOf(1) },
+		"zero Prompt":               func(r *Record) { r.Prompt = Prompt{} },
 		"text on a Hashed prompt":   func(r *Record) { r.Prompt = Prompt{Kind: PromptHashed, Text: "x"} },
 		"bytes on a Full prompt":    func(r *Record) { r.Prompt = Prompt{Kind: PromptFull, Compressed: []byte{1}} },
 		"invalid UTF-8 model":       func(r *Record) { r.Model = "\xff" },
