@@ -286,17 +286,17 @@ func TestNewSignatureFailures(t *testing.T) {
 
 	t.Run("a short signature is refused", func(t *testing.T) {
 		_, err := NewSignature(context.Background(), hashOf(1), failingSigner{key: signer.PublicKey(), sig: make([]byte, 63)}, time.Unix(0, 0))
-		require.Error(t, err)
+		require.ErrorContains(t, err, "signature is 63 bytes, want 64")
 	})
 
 	t.Run("a signature that does not verify is refused", func(t *testing.T) {
 		_, err := NewSignature(context.Background(), hashOf(1), failingSigner{key: signer.PublicKey(), sig: make([]byte, 64)}, time.Unix(0, 0))
-		require.Error(t, err)
+		require.ErrorContains(t, err, "signature does not verify against "+signer.PublicKey().String())
 	})
 
 	t.Run("a nil Signer is refused", func(t *testing.T) {
 		_, err := NewSignature(context.Background(), hashOf(1), nil, time.Unix(0, 0))
-		require.Error(t, err)
+		require.ErrorContains(t, err, "nil Signer")
 	})
 
 	t.Run("a done context is returned", func(t *testing.T) {

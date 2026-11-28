@@ -1,7 +1,6 @@
 package change
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -187,7 +186,7 @@ func NewSignature(ctx context.Context, change ident.Hash, s identity.Signer, at 
 	}
 	return Signature{
 		SignerDID:  key.AtomicDID().String(),
-		Value:      [identity.SignatureSize]byte(bytes.Clone(sig)),
+		Value:      [identity.SignatureSize]byte(sig),
 		SignedHash: change,
 		Timestamp:  at.Unix(),
 		Method:     MethodEd25519,
