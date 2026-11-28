@@ -78,6 +78,12 @@ func TestGrantInfoReadsTheDocsBody(t *testing.T) {
 		Relation:    storage.RelationRead,
 		GrantedAt:   time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
 	}, bare)
+
+	var null storage.GrantInfo
+	require.NoError(t, json.Unmarshal([]byte(`{"id": "00000000-0000-0000-0000-000000000001", "subject_type": "everyone", "subject_id": null, "relation": "read", "granted_by": null, "granted_at": "2024-01-02T00:00:00Z"}`), &null))
+	require.Equal(t, bare, null)
+	require.Nil(t, null.SubjectID)
+	require.Nil(t, null.GrantedBy)
 }
 
 func TestWorkspaceGrantInfoReadsTheDocsBody(t *testing.T) {
