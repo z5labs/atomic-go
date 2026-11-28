@@ -203,9 +203,10 @@ type UpdateOrgRequest struct {
 // into one '-', and with no '-' at either end. "Acme Corp" is "acme-corp",
 // and a name with no ASCII letter or digit, such as "!!!", is "".
 //
-// Lowercasing is Unicode's, as Rust's char::to_lowercase is, so the Kelvin
-// sign 'K' (U+212A) becomes the letter 'k', and 'İ' (U+0130) becomes "i"
-// followed by a combining dot, which is a separator.
+// Lowercasing is Unicode's, as Rust's char::to_lowercase is, so the KELVIN
+// SIGN (U+212A) becomes the letter 'k', and LATIN CAPITAL LETTER I WITH
+// DOT ABOVE (U+0130) becomes "i" followed by a COMBINING DOT ABOVE
+// (U+0307), which is a separator.
 func Slugify(name string) string {
 	var b strings.Builder
 	dash := false
@@ -221,11 +222,11 @@ func Slugify(name string) string {
 		}
 	}
 	for _, r := range name {
-		if r == 'İ' {
+		if r == '\u0130' {
 			// The one character whose lowercase is two: Go's
 			// unicode.ToLower maps it to 'i' alone.
 			emit('i')
-			emit('̇')
+			emit('\u0307')
 			continue
 		}
 		emit(unicode.ToLower(r))

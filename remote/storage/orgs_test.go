@@ -59,8 +59,8 @@ func TestSlugify(t *testing.T) {
 		"already-a-slug":    "already-a-slug",
 		"Team 42":           "team-42",
 		"--a--b--":          "a-b",
-		"Kelvin":            "kelvin",
-		"İstanbul":          "i-stanbul",
+		"\u212Aelvin":       "kelvin",
+		"\u0130stanbul":     "i-stanbul",
 	} {
 		t.Run(name, func(t *testing.T) {
 			require.Equal(t, want, storage.Slugify(name))
@@ -307,6 +307,20 @@ func TestOrgsDelete(t *testing.T) {
 	require.Equal(t, http.MethodDelete, got.method)
 	require.Equal(t, "/orgs/acme-corp", got.requestURI)
 	require.Empty(t, got.body)
+}
+
+func TestOrgsDeleteIgnoresA2xxBody(t *testing.T) {
+	for name, body := range map[string]string{
+		"no data":   `{"success":true}`,
+		"not JSON":  `deleted`,
+		"some data": `{"success":true,"data":{"deleted":true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, got := serve(t, "DELETE /orgs/{slug}", raw(http.StatusOK, body))
+			require.NoError(t, c.Orgs().Delete(t.Context(), "acme-corp"))
+			require.Equal(t, 1, got.calls)
+		})
+	}
 }
 
 func TestOrgsDeleteForbidden(t *testing.T) {
