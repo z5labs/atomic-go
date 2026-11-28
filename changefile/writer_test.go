@@ -462,3 +462,165 @@ func TestReplaceUnhashedRefusals(t *testing.T) {
 		require.ErrorIs(t, err, changefile.ErrInvalidHeader)
 	})
 }
+
+func TestWriterAddRawRefusesWhatAddDoes(t *testing.T) {
+	dec := newDecoder(t)
+	full, _, err := writeFull(t, []byte("signature"), []byte("{}")).Finish()
+	require.NoError(t, err)
+	f, err := changefile.Parse(full, dec)
+	require.NoError(t, err)
+	raw := func(t *testing.T, typ changefile.SectionType) changefile.Section {
+		t.Helper()
+		for _, s := range f.Sections {
+			if s.Type == typ {
+				return s
+			}
+		}
+		require.FailNow(t, "no section of type "+typ.String())
+		return changefile.Section{}
+	}
+
+	testCases := []struct {
+		name    string
+		version changefile.Version
+		before  []changefile.SectionType
+		then    changefile.SectionType
+	}{
+		{"out of order", changefile.Version3, []changefile.SectionType{changefile.SectionGraph}, changefile.SectionProvenance},
+		{"duplicate HEADER", changefile.Version3, []changefile.SectionType{changefile.SectionHeader}, changefile.SectionHeader},
+		{"duplicate DEPS", changefile.Version3, []changefile.SectionType{changefile.SectionDeps}, changefile.SectionDeps},
+		{"duplicate SIGNATURE", changefile.Version3, []changefile.SectionType{changefile.SectionSignature}, changefile.SectionSignature},
+		{"duplicate SPAN", changefile.Version3, []changefile.SectionType{changefile.SectionSpan}, changefile.SectionSpan},
+		{"duplicate UNHASHED", changefile.Version3, []changefile.SectionType{changefile.SectionUnhashed}, changefile.SectionUnhashed},
+		{"SPAN in version 2", changefile.Version2, nil, changefile.SectionSpan},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWriter(t, tc.version, zstdframe.Stored{})
+			for _, typ := range tc.before {
+				require.NoError(t, w.AddRaw(raw(t, typ)))
+			}
+			err := w.AddRaw(raw(t, tc.then))
+			require.ErrorIs(t, err, changefile.ErrUnexpectedSection)
+			errAs(t, err)
+		})
+	}
+}
+
+func TestWriterAddRawChunkIndex(t *testing.T) {
+	dec := newDecoder(t)
+	src, err := changefile.Parse(changefixture.WorkedExample(), dec)
+	require.NoError(t, err)
+	chunk0 := src.Sections[2]
+	require.Equal(t, changefile.SectionContent, chunk0.Type)
+
+	t.Run("AddChunk numbers after a raw chunk", func(t *testing.T) {
+		w := newWriter(t, changefile.Version2, zstdframe.Stored{})
+		require.NoError(t, w.AddRaw(src.Sections[0]))
+		require.NoError(t, w.AddRaw(src.Sections[1]))
+		require.NoError(t, w.AddRaw(chunk0))
+		require.NoError(t, w.AddChunk([]byte("more\n")))
+		b, _, err := w.Finish()
+		require.NoError(t, err)
+		f, err := changefile.Parse(b, dec, changefile.CheckChunks())
+		require.NoError(t, err)
+		require.Equal(t, changefixture.WorkedExampleContent+"more\n", string(f.Content()))
+		require.Equal(t, uint32(1), f.Sections[3].Chunk.Index)
+	})
+
+	t.Run("a raw chunk out of its place", func(t *testing.T) {
+		w := newWriter(t, changefile.Version2, zstdframe.Stored{})
+		require.NoError(t, w.AddChunk([]byte("first")))
+		err := w.AddRaw(chunk0)
+		require.ErrorIs(t, err, changefile.ErrChunkMismatch)
+		errAs(t, err)
+
+		// The refusal left the Writer as it was.
+		require.NoError(t, w.AddChunk([]byte("second")))
+	})
+}
+
+// writeFull returns a version 3 Writer holding one section of every
+// hashed type, two GRAPH and two SEMANTIC sections and two chunks, and
+// signature and unhashed when they are not nil.
+func writeFull(t *testing.T, signature, unhashed []byte) *changefile.Writer {
+	t.Helper()
+	var tb changefile.TableBuilder
+	_, err := tb.Add(ident.Sum([]byte("dep")))
+	require.NoError(t, err)
+	w, err := changefile.NewWriter(changefile.Version3, tb.Table(), zstdframe.Stored{})
+	require.NoError(t, err)
+
+	add := func(typ changefile.SectionType, payload string) {
+		require.NoError(t, w.Add(typ, []byte(payload)), typ.String())
+	}
+	add(changefile.SectionHeader, "header")
+	add(changefile.SectionDeps, "\x01\x01")
+	add(changefile.SectionProvenance, "\x00")
+	if signature != nil {
+		add(changefile.SectionSignature, string(signature))
+	}
+	add(changefile.SectionGraph, "graph 1")
+	add(changefile.SectionGraph, "graph 2")
+	add(changefile.SectionSpan, "span")
+	add(changefile.SectionSemantic, "semantic 1")
+	add(changefile.SectionSemantic, "semantic 2")
+	require.NoError(t, w.AddChunk([]byte("chunk 1")))
+	require.NoError(t, w.AddChunk([]byte("chunk 2")))
+	if unhashed != nil {
+		add(changefile.SectionUnhashed, string(unhashed))
+	}
+	return w
+}
+
+func TestReplaceUnhashedPlacesSectionsInOrder(t *testing.T) {
+	dec := newDecoder(t)
+	signature := []byte("signature")
+
+	plain, hash, err := writeFull(t, nil, nil).Finish()
+	require.NoError(t, err)
+	signed, signedHash, err := writeFull(t, signature, nil).Finish()
+	require.NoError(t, err)
+	both, bothHash, err := writeFull(t, signature, []byte(unhashedJSON)).Finish()
+	require.NoError(t, err)
+	require.Equal(t, hash, signedHash)
+	require.Equal(t, hash, bothHash)
+
+	f, err := changefile.Parse(plain, dec)
+	require.NoError(t, err)
+
+	b, err := changefile.ReplaceUnhashed(f, changefile.SectionSignature, signature, zstdframe.Stored{})
+	require.NoError(t, err)
+	require.Equal(t, signed, b)
+	f, err = changefile.Parse(b, dec)
+	require.NoError(t, err)
+	require.Equal(t, hash, f.Hash)
+	require.Equal(t, []changefile.SectionType{
+		changefile.SectionHeader,
+		changefile.SectionDeps,
+		changefile.SectionProvenance,
+		changefile.SectionSignature,
+		changefile.SectionGraph,
+		changefile.SectionGraph,
+		changefile.SectionSpan,
+		changefile.SectionSemantic,
+		changefile.SectionSemantic,
+		changefile.SectionContent,
+		changefile.SectionContent,
+	}, types(f))
+
+	b, err = changefile.ReplaceUnhashed(f, changefile.SectionUnhashed, []byte(unhashedJSON), zstdframe.Stored{})
+	require.NoError(t, err)
+	require.Equal(t, both, b)
+	f, err = changefile.Parse(b, dec)
+	require.NoError(t, err)
+	require.Equal(t, hash, f.Hash)
+
+	b, err = changefile.ReplaceUnhashed(f, changefile.SectionSignature, nil, nil)
+	require.NoError(t, err)
+	f, err = changefile.Parse(b, dec)
+	require.NoError(t, err)
+	b, err = changefile.ReplaceUnhashed(f, changefile.SectionUnhashed, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, plain, b)
+}

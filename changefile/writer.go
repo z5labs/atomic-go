@@ -43,9 +43,13 @@ var (
 // on with another section. A Writer is not safe for concurrent use.
 type Writer struct {
 	version Version
-	table   HashTable
 	c       Compressor
 	hasher  *ident.Hasher
+
+	// table is the hash dedup table as it is written, and hashed, and
+	// entries the number of entries it holds.
+	table   []byte
+	entries int
 
 	// body is every section added so far, frames and payloads, in order.
 	body []byte
@@ -75,10 +79,13 @@ func NewWriter(v Version, table HashTable, c Compressor) (*Writer, error) {
 	if c == nil {
 		return nil, ErrNilCompressor
 	}
+	tb, err := table.AppendBinary(nil)
+	if err != nil {
+		return nil, err
+	}
 	hasher := ident.NewHasher()
-	tb, _ := table.AppendBinary(nil)
 	hasher.Write(tb)
-	return &Writer{version: v, table: table, c: c, hasher: hasher}, nil
+	return &Writer{version: v, c: c, hasher: hasher, table: tb, entries: table.Len()}, nil
 }
 
 // Add compresses payload and adds it as the next section, of type t. It
@@ -147,12 +154,16 @@ func (w *Writer) compress(t SectionType, start, frameSize int, payload []byte) e
 // AddRaw adds s as the next section, copying its Frame and Compressed
 // byte for byte, as they are in the file s was read from. Its Payload and
 // Chunk are not read, and nothing is compressed, so a hashed section adds
-// to the change hash exactly what it added to the hash of that file. A
-// CONTENT frame keeps its own chunk index.
+// to the change hash exactly what it added to the hash of that file.
 //
 // AddRaw fails as [Writer.Add] does, CONTENT aside, and with a
 // *[FormatError] of kind [ErrInvalidHeader] when the Frame is not a frame
-// of s.Type whose compressed length is len(s.Compressed).
+// of s.Type whose compressed length is len(s.Compressed). A CONTENT frame
+// keeps its chunk index, so that index must be the one [Writer.AddChunk]
+// would give the chunk, the number of CONTENT sections already added;
+// any other fails with kind [ErrChunkMismatch]. Copying a file's sections
+// in file order meets that whenever the file's chunks are numbered from
+// 0, as Atomic numbers them.
 func (w *Writer) AddRaw(s Section) error {
 	if err := w.check(s.Type); err != nil {
 		return err
@@ -163,6 +174,12 @@ func (w *Writer) AddRaw(s Section) error {
 	}
 	if n := binary.LittleEndian.Uint32(s.Frame[len(s.Frame)-4:]); uint64(n) != uint64(len(s.Compressed)) {
 		return formatError(ErrInvalidHeader, t, -1, fmt.Sprintf("the frame gives a compressed length of %d, but the payload is %d bytes", n, len(s.Compressed)))
+	}
+	if t == SectionContent {
+		want := w.counts[SectionContent.Order()]
+		if i := binary.LittleEndian.Uint32(s.Frame[1:]); uint64(i) != want {
+			return formatError(ErrChunkMismatch, t, -1, fmt.Sprintf("chunk_index is %d, expected %d", i, want))
+		}
 	}
 	start := len(w.body)
 	w.body = append(w.body, s.Frame...)
@@ -230,7 +247,7 @@ func (w *Writer) Finish() ([]byte, ident.Hash, error) {
 	count := func(t SectionType) uint32 { return uint32(w.counts[t.Order()]) }
 	h := FileHeader{
 		Version:          w.version,
-		HashTableEntries: uint32(w.table.Len()),
+		HashTableEntries: uint32(w.entries),
 		GraphSections:    count(SectionGraph),
 		SemanticSections: count(SectionSemantic),
 		ContentChunks:    count(SectionContent),
@@ -245,9 +262,12 @@ func (w *Writer) Finish() ([]byte, ident.Hash, error) {
 			h.Flags |= f
 		}
 	}
-	size := HeaderSize + ident.Size*w.table.Len() + len(w.body) + TrailerSize
-	out, _ := h.AppendBinary(make([]byte, 0, size))
-	out, _ = w.table.AppendBinary(out)
+	size := HeaderSize + len(w.table) + len(w.body) + TrailerSize
+	out, err := h.AppendBinary(make([]byte, 0, size))
+	if err != nil {
+		return nil, ident.Hash{}, err
+	}
+	out = append(out, w.table...)
 	out = append(out, w.body...)
 	w.hash = w.hasher.Sum()
 	w.out = append(out, w.hash[:]...)
@@ -325,8 +345,14 @@ func ReplaceUnhashed(f *File, t SectionType, payload []byte, c Compressor) ([]by
 	if payload != nil {
 		h.Flags |= flag
 	}
-	out, _ := h.AppendBinary(make([]byte, 0, len(f.Bytes())+len(frame)))
-	out, _ = f.Table.AppendBinary(out)
+	out, err := h.AppendBinary(make([]byte, 0, len(f.Bytes())+len(frame)))
+	if err != nil {
+		return nil, err
+	}
+	out, err = f.Table.AppendBinary(out)
+	if err != nil {
+		return nil, err
+	}
 	for _, s := range f.Sections {
 		if s.Type == t {
 			continue
