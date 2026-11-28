@@ -138,7 +138,9 @@ func (ids Identities) ByPublicKey(ctx context.Context, key string) (IdentityInfo
 //
 // It succeeds only when the reply's public key parses and did Matches it
 // ([identity.DID.Matches]), as either its did:atomic or its did:key, so a
-// server cannot bind a stranger's key to the DID. A missing key or one that
+// server cannot bind a stranger's key to the DID. So on success the
+// returned PublicKey is never nil, and [identity.ParsePublicKey] of it
+// always succeeds with a key did Matches. A missing key or one that
 // is not did's is a [remote.KindProtocol] wrapping [ErrKeyNotBound], and a
 // key that does not parse is a [remote.KindProtocol] wrapping the error
 // from [identity.ParsePublicKey], which wraps [identity.ErrInvalidKey].
