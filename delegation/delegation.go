@@ -7,13 +7,15 @@
 // share the certificate's signing method: the [Revocation] a human signs to
 // withdraw a certificate ([Revoke]), and the [Request] an agent signs to
 // prove it holds its key before a human issues a certificate for it
-// ([NewRequest], [Request.Grant]).
+// ([NewRequest], [Request.Grant]). [Choose] picks the certificate an agent
+// presents to a server, and [CheckPermission] pre-flights an action against
+// it.
 //
 // Everything here is a pure function of its arguments. [Issue], [Revoke] and
 // [NewRequest] take the signer's [identity.Signer] and the time to write,
-// and [Certificate.Expired]
-// and [Certificate.Allows] take the time to check at, so nothing reads the
-// clock.
+// and [Certificate.Expired], [Certificate.Allows], [Choose] and
+// [CheckPermission] take the time to check at, so nothing reads the clock.
+// [Choose] takes revocation as a func, so nothing reads the disk.
 //
 // The formats are documented in docs/remote/auth.md#delegation,
 // docs/remote/auth.md#agentdelegation, docs/remote/auth.md#scope,
@@ -21,8 +23,10 @@
 // docs/remote/auth.md#delegationpermission,
 // docs/remote/auth.md#resourceref, docs/remote/auth.md#revocation-and-epochs,
 // docs/remote/auth.md#delegation-requests,
-// docs/remote/auth.md#delegationrevocation and
-// docs/remote/auth.md#delegationrequest.
+// docs/remote/auth.md#delegationrevocation,
+// docs/remote/auth.md#delegationrequest,
+// docs/remote/auth.md#choosing-a-certificate and
+// docs/remote/auth.md#check_permission.
 package delegation
 
 import "errors"
@@ -49,10 +53,9 @@ var (
 	// which [DecodeHeader] refuses before decoding it.
 	ErrHeaderTooLarge = errors.New("delegation: header value too large")
 
-	// ErrExpired reports a certificate used after its expiry. Nothing in
-	// this package returns it, since [Certificate.Expired] answers with a
-	// bool; it is for callers, such as certificate choice, that refuse an
-	// expired certificate with an error.
+	// ErrExpired reports a certificate used after its expiry.
+	// [Certificate.Expired] answers with a bool; [Choose] refuses an expired
+	// certificate with a *[SelectionError] that wraps this.
 	ErrExpired = errors.New("delegation: certificate expired")
 
 	// ErrInvalidRevocation reports a document that is not a revocation, or
@@ -70,4 +73,17 @@ var (
 	// ErrVerifyRequest reports a delegation request that fails one of the
 	// checks of [Request.Verify].
 	ErrVerifyRequest = errors.New("delegation: delegation request does not verify")
+
+	// ErrNoUsableCertificate reports that [Choose] found no certificate to
+	// present. The error is a *[SelectionError] saying why.
+	ErrNoUsableCertificate = errors.New("delegation: no usable certificate")
+
+	// ErrWrongDelegate reports a certificate issued to another delegate than
+	// the agent presenting it.
+	ErrWrongDelegate = errors.New("delegation: certificate issued to another delegate")
+
+	// ErrNotPermitted reports an action a certificate does not allow. The
+	// error from [CheckPermission] is a *[PermissionError] saying what was
+	// refused.
+	ErrNotPermitted = errors.New("delegation: not permitted")
 )
