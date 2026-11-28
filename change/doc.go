@@ -4,7 +4,11 @@
 // returns it as a [Verified] change, bound to the bytes and hash that give
 // it its identity. [Change.Validate] applies Atomic's validate_v2 rules,
 // which a decoded change has already passed; the reader is documented in
-// docs/remote/change-format/container.md#reader-validation.
+// docs/remote/change-format/container.md#reader-validation. [Encode] is
+// the reverse: it writes a Change as a version 2 or 3 file in the layout
+// of Atomic's Change::serialize, splitting its content blob with a
+// [Chunker], and is documented in
+// docs/remote/change-format/container.md#writer-rules.
 //
 // A [Header] is the human-readable part of the HEADER section, its message,
 // description, timestamp and [Author]s; a [Kind] says whether the change is
