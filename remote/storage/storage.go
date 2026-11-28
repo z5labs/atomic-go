@@ -12,6 +12,10 @@
 // (docs/remote/endpoints/storage.md#response-envelope). Every failed request comes back as a [*remote.Error]; see
 // [Client] for how each failure maps to a [remote.Kind].
 //
+// [Register] sends the one management request that does not go through a
+// Client: it registers a signed identity with a server, sending nothing but
+// the JSON body (docs/remote/endpoints/storage.md#execute).
+//
 // # Paths
 //
 // A slug, ID or key that goes into a request path is refused, with an error
@@ -161,7 +165,7 @@ func New(base *url.URL, doer Doer, logger *slog.Logger, clientVersion string, op
 		missing("the base URL")
 	} else {
 		var baseErrs []error
-		trimmed, baseErrs = checkBase(base)
+		trimmed, baseErrs = checkBase("the base URL", base)
 		errs = append(errs, baseErrs...)
 	}
 	if doer == nil {
@@ -208,11 +212,12 @@ func New(base *url.URL, doer Doer, logger *slog.Logger, clientVersion string, op
 }
 
 // checkBase returns a copy of base with its trailing '/' characters
-// trimmed, and every reason it cannot be a base URL.
-func checkBase(base *url.URL) (*url.URL, []error) {
+// trimmed, and every reason it cannot be a base URL. name is how each
+// reason refers to base, such as "the base URL".
+func checkBase(name string, base *url.URL) (*url.URL, []error) {
 	var errs []error
 	refuse := func(format string, args ...any) {
-		errs = append(errs, fmt.Errorf("%w: the base URL %s", ErrInvalidArgument, fmt.Sprintf(format, args...)))
+		errs = append(errs, fmt.Errorf("%w: %s %s", ErrInvalidArgument, name, fmt.Sprintf(format, args...)))
 	}
 	switch strings.ToLower(base.Scheme) {
 	case "http", "https":
