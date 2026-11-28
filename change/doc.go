@@ -11,4 +11,11 @@
 // report every failure as a *changefile.FormatError. The payloads are
 // documented in docs/remote/change-format/sections.md#header-section and
 // #deps-section.
+//
+// A [Signature] is the SIGNATURE section's value. [NewSignature] signs a
+// change hash with any identity.Signer, [Sign] signs a change file without
+// changing its hash, and [VerifySignature] checks a signature against a
+// key the caller resolved: the signer DID a signature carries is only a
+// hint, and nothing here trusts it. Signing is documented in
+// docs/remote/change-format/container.md#signing.
 package change
