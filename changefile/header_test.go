@@ -322,7 +322,7 @@ func TestSentinelsAreDistinct(t *testing.T) {
 		changefile.ErrHashMismatch, changefile.ErrHashTableFull, changefile.ErrHashIndexOutOfBounds,
 		changefile.ErrHashNotFound, changefile.ErrInvalidChangeMetadata, changefile.ErrInvalidGraphOp,
 		changefile.ErrPayload, changefile.ErrValidation, changefile.ErrTrailingBytes,
-		changefile.ErrChunkMismatch,
+		changefile.ErrChunkMismatch, changefile.ErrNilDecompressor,
 	}
 	texts := map[string]bool{}
 	for i, a := range all {

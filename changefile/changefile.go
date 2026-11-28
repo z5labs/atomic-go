@@ -3,6 +3,9 @@
 // and the order they appear in, the [Section] and [ChunkInfo] views of a
 // framed section, the [HashTable] that payloads name other changes through,
 // and the one [FormatError] every change-file failure is reported as.
+// [Parse] reads and verifies a whole file, [Reader] does the same a section
+// at a time, and [Verify] checks a file and returns its change hash without
+// decompressing anything.
 //
 // A change file is the header, the hash dedup table, the sections and a
 // 32-byte trailer, back to back. The trailer is the BLAKE3 change hash of
@@ -76,7 +79,8 @@ var (
 	ErrUnsupportedVersion = errors.New("unsupported format version")
 
 	// ErrInvalidHeader reports a header whose fields contradict each other,
-	// or a hash table with a repeated entry.
+	// a hash table with a repeated entry, or sections that do not match
+	// what the header declares.
 	ErrInvalidHeader = errors.New("invalid header")
 
 	// ErrInvalidSectionType reports a section type byte that is not one of
@@ -136,10 +140,15 @@ var (
 	// ErrChunkMismatch reports a CONTENT frame whose chunk index, hash or
 	// length does not match its chunk.
 	ErrChunkMismatch = errors.New("content chunk mismatch")
+
+	// ErrNilDecompressor reports a nil [Decompressor] given to [NewReader]
+	// or [Parse]. It is a mistake in the caller, not in a file, so it is
+	// returned as it is, not as a [FormatError].
+	ErrNilDecompressor = errors.New("changefile: nil Decompressor")
 )
 
 // FormatError is a change-file failure. Every error this package and the
-// change-file reader and writer report is a *FormatError, or a
+// change-file reader and writer report about a file is a *FormatError, or a
 // *[HashMismatchError] for a trailer that does not match.
 //
 // [errors.Is] matches a FormatError against its Kind, and reaches Err
