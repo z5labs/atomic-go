@@ -5,7 +5,9 @@
 // and the one [FormatError] every change-file failure is reported as.
 // [Parse] reads and verifies a whole file, [Reader] does the same a section
 // at a time, and [Verify] checks a file and returns its change hash without
-// decompressing anything.
+// decompressing anything. [Writer] writes a canonical version 2 or 3
+// file, and [ReplaceUnhashed] sets or removes the SIGNATURE or UNHASHED
+// section of a file without changing its change hash.
 //
 // A change file is the header, the hash dedup table, the sections and a
 // 32-byte trailer, back to back. The trailer is the BLAKE3 change hash of
