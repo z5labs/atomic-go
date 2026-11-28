@@ -1,10 +1,16 @@
-// Package change holds the typed values of an Atomic change: for now, what
-// its HEADER section carries. A [Header] is the human-readable part, its
-// message, description, timestamp and [Author]s; a [Kind] says whether the
-// change is durable history or a working-copy snapshot; and an [Origin]
-// says whether Atomic authored it natively or synthesized it from a Git
-// commit, which [Origin.Validate] checks the way Atomic does while it
-// decodes a change.
+// Package change holds the typed values of an Atomic change. [Decode] reads
+// a whole change file into a [Change], one typed field per section, with
+// the checks and the error order of Atomic's Change::deserialize, and
+// returns it as a [Verified] change, bound to the bytes and hash that give
+// it its identity. [Change.Validate] applies Atomic's validate_v2 rules,
+// which a decoded change has already passed; the reader is documented in
+// docs/remote/change-format/container.md#reader-validation.
+//
+// A [Header] is the human-readable part of the HEADER section, its message,
+// description, timestamp and [Author]s; a [Kind] says whether the change is
+// durable history or a working-copy snapshot; and an [Origin] says whether
+// Atomic authored it natively or synthesized it from a Git commit, which
+// [Origin.Validate] checks the way Atomic does while it decodes a change.
 //
 // The package also holds the unexported codecs for the HEADER and DEPS
 // payloads, which resolve hash indices through a changefile.HashTable and
