@@ -12,13 +12,22 @@
 // rule its family is keyed by, so an object is never stored under a name it
 // does not have; [ChangeKey] and [SidecarKey] compute two of those keys.
 //
+// A push is planned, packed and checked by three more. [PlanPush] compares
+// a chain of [LocalView]s with an advertisement and decides, per view, what
+// to store and whether to declare, or reports a [Conflict]. [BuildPack]
+// turns that [Plan] into the pack Atomic's push sends, in its order,
+// reading change files, sidecars and tags from a [PackSource] the caller
+// implements over its own repository. [VerifyPush] checks the advertisement
+// re-read after the push against the plan, returning a [VerifyError].
+//
 // Nothing here touches the network. A remote is assumed to send every
 // ancestor's ref and snapshot on a full pull, as Atomic's test peer does;
 // one it leaves out is an error, not a guess.
 //
 // The flows are documented in docs/remote/flows.md, under Request 1: ref
-// advertisement and Reading the chain and saving changes, and the per-family
-// keys in docs/remote/endpoints/project.md, under ObjectRecord.
+// advertisement, Planning what to send, Building the pack, Request 4:
+// verify and Reading the chain and saving changes, and the per-family keys
+// in docs/remote/endpoints/project.md, under ObjectRecord.
 package syncflow
 
 import (
