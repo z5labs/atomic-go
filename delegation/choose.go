@@ -1,7 +1,6 @@
 package delegation
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"slices"
@@ -94,8 +93,8 @@ type SelectionError struct {
 	Servers []string
 
 	// Err is the underlying failure, or nil. For [ExplicitUnusable] it is
-	// the decode or verify error, or an error wrapping [ErrExpired]; for
-	// [NewestExpired] it is [ErrExpired].
+	// the decode or verify error, or an error wrapping [ErrWrongDelegate] or
+	// [ErrExpired]; for [NewestExpired] it is [ErrExpired].
 	Err error
 }
 
@@ -118,8 +117,8 @@ func (e *SelectionError) Error() string {
 		if e.Server != "" {
 			fmt.Fprintf(&b, " on %s", e.Server)
 		}
-		if len(e.Servers) == 0 {
-			b.WriteString("; it is not scoped to any server and grants nothing that implies read")
+		if e.scopedToServer() {
+			b.WriteString("; it grants nothing that implies read")
 		} else {
 			fmt.Fprintf(&b, "; it is scoped to %s", strings.Join(e.Servers, ", "))
 		}
@@ -132,6 +131,20 @@ func (e *SelectionError) Error() string {
 		fmt.Fprintf(&b, ": %v", e.Err)
 	}
 	return b.String()
+}
+
+// scopedToServer reports whether the server scope in e lets Server through:
+// it is empty, Server is "", or Server is listed. A certificate scoped to
+// the server that still does not allow read grants nothing that implies
+// read.
+func (e *SelectionError) scopedToServer() bool {
+	if len(e.Servers) == 0 || e.Server == "" {
+		return true
+	}
+	want := NormalizeServer(e.Server)
+	return slices.ContainsFunc(e.Servers, func(s string) bool {
+		return NormalizeServer(s) == want
+	})
 }
 
 // Unwrap returns [ErrNoUsableCertificate] and, when it is set, Err.
@@ -166,7 +179,9 @@ func (e *SelectionError) Unwrap() []error {
 // [NewestExpired], or [NotValidForServer], in that order of precedence.
 // With none at all the reason is [NoCertificates].
 //
-// Every failure is a *[SelectionError] wrapping [ErrNoUsableCertificate].
+// Apart from a nil revoked, which is a programming error and wraps no
+// sentinel, every failure is a *[SelectionError] wrapping
+// [ErrNoUsableCertificate].
 // A certificate Choose returns is worth sending, not certain to be
 // accepted: the server re-checks it, and knows of revocations this machine
 // does not.
@@ -193,7 +208,7 @@ func Choose(c Candidates, now time.Time, revoked func(ID) bool) (Certificate, er
 		return Certificate{}, &SelectionError{Reason: NoCertificates, Server: c.Server}
 	}
 	slices.SortStableFunc(mine, func(a, b Certificate) int {
-		return cmp.Compare(b.view.Issued.UnixNano(), a.view.Issued.UnixNano())
+		return b.view.Issued.Compare(a.view.Issued)
 	})
 
 	read := ResourceRef{Server: c.Server}
@@ -228,8 +243,8 @@ func explicitCertificate(value string, agent identity.DID, now time.Time) (Certi
 		return Certificate{}, err
 	}
 	if cert.view.Delegate != agent {
-		return Certificate{}, fmt.Errorf("delegation: certificate was issued to %s (%q), not to %s",
-			cert.view.Delegate, cert.view.DelegateName, agent)
+		return Certificate{}, fmt.Errorf("%w: it was issued to %s (%q), not to %s",
+			ErrWrongDelegate, cert.view.Delegate, cert.view.DelegateName, agent)
 	}
 	if cert.Expired(now) {
 		return Certificate{}, fmt.Errorf("%w at %s", ErrExpired, cert.view.Expires.Format(time.RFC3339))
@@ -282,6 +297,11 @@ func (e *PermissionError) Error() string {
 	if e.Expired {
 		b.WriteString("; the certificate has expired")
 	}
+	if e.Projects == nil && !e.Expired && slices.ContainsFunc(e.Granted, func(g Permission) bool {
+		return g.Implies(e.Permission)
+	}) {
+		fmt.Fprintf(&b, "; %s is granted, but the certificate's scope excludes this server, workspace or view", e.Permission)
+	}
 	return b.String()
 }
 
@@ -292,7 +312,11 @@ func (e *PermissionError) Unwrap() error {
 
 // Remedy returns the command that would issue a certificate granting the
 // refused permission, such as
-// "atomic identity delegate alice+claude --can push".
+// "atomic identity delegate alice+claude --can push", as Atomic's
+// check_permission suggests whatever the refusal was. A new certificate
+// also replaces an expired one, but when the permission is already granted
+// and the resource is outside the scope, the certificate has to be issued
+// with a wider scope as well.
 func (e *PermissionError) Remedy() string {
 	return fmt.Sprintf("atomic identity delegate %s --can %s", e.Identity, e.Permission)
 }

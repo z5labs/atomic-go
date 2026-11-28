@@ -157,6 +157,44 @@ func TestChooseNewestRevokedUsesAnOlderOne(t *testing.T) {
 	require.Equal(t, older.ID(), got.ID())
 }
 
+func TestChooseFarFutureIssuedIsNewest(t *testing.T) {
+	// 2300 is past what time.Time.UnixNano can represent, so the sort must
+	// compare times, not nanosecond counts.
+	far := chooseNow().AddDate(274, 0, 0)
+	future, err := delegation.Issue(context.Background(), human(t), delegation.Grant{
+		DelegateKey: agent(t).PublicKey(),
+		Issued:      far,
+		Scope:       delegation.NewScope(delegation.PermissionPush),
+	})
+	require.NoError(t, err)
+	usable := issue(t, storageScope(), day, week)
+
+	_, err = delegation.Choose(candidates(t, usable, future), chooseNow(), revokedSet{usable.ID(): true}.revoked)
+	se := requireSelection(t, err, delegation.NotValidForServer)
+	require.Nil(t, se.Servers, "the reason came from the certificate issued in %d", far.Year())
+}
+
+func TestChooseTiesKeepStoredOrder(t *testing.T) {
+	// Two delegators issuing at the same moment give certificates with the
+	// same issued time and different ids.
+	grant := delegation.Grant{
+		DelegateKey: agent(t).PublicKey(),
+		Issued:      chooseNow().Add(-day),
+		Scope:       storageScope(),
+	}
+	fromHuman, err := delegation.Issue(context.Background(), human(t), grant)
+	require.NoError(t, err)
+	fromOther, err := delegation.Issue(context.Background(), otherAgent(t), grant)
+	require.NoError(t, err)
+	require.NotEqual(t, fromHuman.ID(), fromOther.ID())
+
+	for _, order := range [][]delegation.Certificate{{fromHuman, fromOther}, {fromOther, fromHuman}} {
+		got, err := delegation.Choose(candidates(t, order...), chooseNow(), revokedSet{}.revoked)
+		require.NoError(t, err)
+		require.Equal(t, order[0].ID(), got.ID())
+	}
+}
+
 func TestChooseSkipsUnusableOlderAndNewer(t *testing.T) {
 	expired := issue(t, storageScope(), 2*week, week)
 	usable := issue(t, storageScope(), 3*day, week)
@@ -245,6 +283,8 @@ func TestChoosePushOnlyIsNotValidForServer(t *testing.T) {
 	_, err := delegation.Choose(candidates(t, pushOnly), chooseNow(), revokedSet{}.revoked)
 	se := requireSelection(t, err, delegation.NotValidForServer)
 	require.Equal(t, []string{storage}, se.Servers)
+	require.ErrorContains(t, err, "does not allow read on "+storage+"; it grants nothing that implies read")
+	require.NotContains(t, err.Error(), "scoped to")
 }
 
 func TestChoosePushOnlyUnscopedNamesNoServer(t *testing.T) {
@@ -255,7 +295,7 @@ func TestChoosePushOnlyUnscopedNamesNoServer(t *testing.T) {
 	_, err := delegation.Choose(c, chooseNow(), revokedSet{}.revoked)
 	se := requireSelection(t, err, delegation.NotValidForServer)
 	require.Empty(t, se.Servers)
-	require.ErrorContains(t, err, "not scoped to any server and grants nothing that implies read")
+	require.EqualError(t, err, "delegation: no usable certificate: the newest certificate does not allow read; it grants nothing that implies read")
 }
 
 func TestChooseAdminImpliesRead(t *testing.T) {
@@ -344,6 +384,7 @@ func TestChooseExplicitUnusable(t *testing.T) {
 		{
 			name:    "for another delegate",
 			header:  issueTo(t, otherAgent(t), storageScope(), day, week).HeaderValue(),
+			errIs:   delegation.ErrWrongDelegate,
 			message: "was issued to " + otherAgent(t).PublicKey().AtomicDID().String(),
 		},
 	}
@@ -427,6 +468,15 @@ func TestCheckPermission(t *testing.T) {
 		require.ErrorAs(t, err, &pe)
 		require.Nil(t, pe.Projects)
 		require.NotContains(t, err.Error(), "scoped to projects")
+	})
+
+	t.Run("granted permission out of server scope", func(t *testing.T) {
+		elsewhere := delegation.ResourceRef{Server: staging, Project: "acme/api"}
+		err := delegation.CheckPermission(cert, delegation.PermissionPush, elsewhere, chooseNow(), "alice+claude")
+		var pe *delegation.PermissionError
+		require.ErrorAs(t, err, &pe)
+		require.Nil(t, pe.Projects)
+		require.ErrorContains(t, err, "push is granted, but the certificate's scope excludes this server, workspace or view")
 	})
 
 	t.Run("expired", func(t *testing.T) {

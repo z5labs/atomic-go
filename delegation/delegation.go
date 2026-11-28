@@ -78,6 +78,10 @@ var (
 	// present. The error is a *[SelectionError] saying why.
 	ErrNoUsableCertificate = errors.New("delegation: no usable certificate")
 
+	// ErrWrongDelegate reports a certificate issued to another delegate than
+	// the agent presenting it.
+	ErrWrongDelegate = errors.New("delegation: certificate issued to another delegate")
+
 	// ErrNotPermitted reports an action a certificate does not allow. The
 	// error from [CheckPermission] is a *[PermissionError] saying what was
 	// refused.
