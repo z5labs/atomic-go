@@ -1,13 +1,25 @@
 // Package identity holds the types Atomic names its signers by: the Ed25519
 // [PublicKey] of an identity, the [ID] that fingerprints it, the two [DID]
-// forms documents use to name either, and an [Identity]'s [Type].
+// forms documents use to name either, and an [Identity]'s [Type]. It also
+// holds the [Signer] every signature in this module goes through, and the
+// signed [Registration] that registers a user with a server.
 //
 // Keys and ids are written as strict, upper-case, unpadded base32, the way
 // atomic-core's BASE32_NOPAD codec writes them. A did:atomic is an id with a
-// prefix, and a did:key carries the key itself in base58btc. Everything here
-// is pure computation.
+// prefix, and a did:key carries the key itself in base58btc.
 //
-// The formats are documented in docs/remote/auth.md#identities-and-dids.
+// [Signer] is declared here, once, rather than in each package that signs.
+// That is a deliberate exception to the repository's rule that an interface
+// is declared in the package that uses it: the token, canonical,
+// delegation, projectidentity and change packages all need both of its
+// methods, and sharing one declaration lets one in-memory or
+// hardware-backed key serve all of them.
+//
+// Nothing here reads the host. Keys and times come in as arguments, and
+// Ed25519 is deterministic, so no randomness is needed.
+//
+// The formats are documented in docs/remote/auth.md#identities-and-dids,
+// docs/remote/auth.md#registration and docs/remote/auth.md#signing.
 package identity
 
 import (
@@ -51,6 +63,14 @@ var (
 	// ErrNotRegistrable reports an identity a server cannot register:
 	// only a [TypeUser] identity creates a tenant.
 	ErrNotRegistrable = errors.New("identity: identity cannot be registered")
+
+	// ErrInvalidPrivateKey reports bytes that are not an Ed25519 private
+	// key or seed.
+	ErrInvalidPrivateKey = errors.New("identity: invalid private key")
+
+	// ErrKeyMismatch reports a [Signer] whose key is not the identity's
+	// own.
+	ErrKeyMismatch = errors.New("identity: signer key does not match identity")
 )
 
 // Type is an identity's type. Atomic writes it in snake_case, and only the
