@@ -19,8 +19,25 @@
 // carried the certificate (docs/remote/transport.md#redirects-proxies-and-http-version).
 // The headers themselves are described in docs/remote/auth.md#request-headers.
 //
+// Which identity the credentials are for is chosen before any of that.
+// [ChooseName] picks an identity name for a project URL by the Rust client's
+// rules (docs/remote/auth.md#choosing-an-identity), and [Resolve] looks it up
+// in the caller's identity store, falling back to the default identity for a
+// name that was inferred rather than asked for. [ResolveForManagement] is the
+// management client's choice, which is always a human. [CheckPushCredentials]
+// fails a push early, with an [*AuthenticationError] naming the
+// [CredentialIssue], when no identity resolves or its key will not load.
+//
+// The identity store is the caller's: this package sees it only through the
+// small interfaces it declares, [Directory], [KeyLoader], [CertificateStore]
+// and [RevocationList], composed into [PushStore] and [Store]. [Keyring] is an
+// in-memory Store. Rust's on-disk store and its ~/.atomic profiles are not
+// read here.
+//
 // Nothing here reads the host: the wrapped transport, the credentials and
-// the origin are all arguments to [NewTransport].
+// the origin are all arguments to [NewTransport], the environment's values
+// come in a [Selection], and the identities, keys and certificates come
+// through a [Store].
 package auth
 
 import (
@@ -28,8 +45,8 @@ import (
 	"net/http"
 )
 
-// ErrInvalidArgument is wrapped by every error [NewTransport] returns for an
-// argument it refused.
+// ErrInvalidArgument is wrapped by every error [NewTransport] and
+// [NewKeyring] return for an argument they refused.
 var ErrInvalidArgument = errors.New("auth: invalid argument")
 
 // Credentials adds the headers that authenticate one request, such as
