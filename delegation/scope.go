@@ -6,6 +6,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 )
 
@@ -69,7 +70,13 @@ func (s Scope) Grants(p Permission) bool {
 // dimension r sets must be allowed by s's list for it. An empty list allows
 // any value. A server is allowed when it equals a listed server after
 // [NormalizeServer] on both sides; a workspace, project or view when it
-// [Match]es a listed pattern. A dimension r leaves "" is not checked.
+// [Match]es a listed pattern.
+//
+// A dimension r leaves "" is not checked at all, so it is allowed whatever
+// s lists for it. A caller building r from a request must therefore never
+// leave a dimension "" because the request names an empty one: an empty
+// project in a path is not "no project", and passing it as "" fails open.
+// Reject such a request before asking Allows.
 //
 // Allows checks the scope alone. A certificate's expiry, its revocation and
 // the delegator's own grants are checked elsewhere.
@@ -158,13 +165,14 @@ func scopeMember(name string) (string, bool) {
 // UnmarshalJSON reads a scope object as Atomic does
 // (docs/remote/auth.md#delegationscope). permissions is required, and each
 // one must be a wire value ([Permission.UnmarshalText]). The other lists
-// may be absent, which leaves them empty, and projects and views may be
+// may be absent, which leaves them nil, as an empty list does, and
+// projects and views may be
 // written under their older names: repository_patterns, and view_patterns
 // or stack_patterns. max_changes and description may be absent or null.
 // Members a scope does not have are ignored.
 //
-// It refuses, with an error wrapping [ErrInvalidScope], a value that is not
-// an object, a member written twice, a member written under both its name
+// It refuses, with an error wrapping [ErrInvalidScope], input that is not
+// exactly one JSON object, a member written twice, a member written under both its name
 // and an older one (or under two older ones), a list that is null or holds
 // anything but strings, a max_changes that is not an unsigned 64-bit
 // integer, and a description that is not a string. s is unchanged on
@@ -205,7 +213,7 @@ func (s *Scope) UnmarshalJSON(b []byte) error {
 	if _, err := dec.ReadToken(); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidScope, err)
 	}
-	if _, err := dec.ReadToken(); err == nil {
+	if _, err := dec.ReadToken(); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: data after the object", ErrInvalidScope)
 	}
 	if _, ok := seen["permissions"]; !ok {
@@ -223,7 +231,10 @@ func (s *Scope) decodeMember(member string, v jsontext.Value) error {
 		if err != nil {
 			return err
 		}
-		perms := make([]Permission, len(texts))
+		var perms []Permission
+		if len(texts) > 0 {
+			perms = make([]Permission, len(texts))
+		}
 		for i, t := range texts {
 			if err := perms[i].UnmarshalText([]byte(t)); err != nil {
 				return err
@@ -270,8 +281,10 @@ func decodeList(v jsontext.Value, dst *[]string) error {
 	return nil
 }
 
-// decodeStrings decodes v as an array of strings. Unlike encoding/json, it
-// refuses null, for the array and for each element, as Atomic does.
+// decodeStrings decodes v as an array of strings, and an empty array as
+// nil, so a scope round-trips to the value it was marshalled from. Unlike
+// encoding/json, it refuses null, for the array and for each element, as
+// Atomic does.
 func decodeStrings(v jsontext.Value) ([]string, error) {
 	if v.Kind() != '[' {
 		return nil, errors.New("not an array")
@@ -279,6 +292,9 @@ func decodeStrings(v jsontext.Value) ([]string, error) {
 	var raw []jsontext.Value
 	if err := json.Unmarshal(v, &raw); err != nil {
 		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, nil
 	}
 	out := make([]string, len(raw))
 	for i, e := range raw {

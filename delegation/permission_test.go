@@ -9,15 +9,17 @@ import (
 	"github.com/z5labs/atomic-go/delegation"
 )
 
-var allPermissions = []delegation.Permission{
-	delegation.PermissionRead,
-	delegation.PermissionRecord,
-	delegation.PermissionPush,
-	delegation.PermissionPull,
-	delegation.PermissionManageViews,
-	delegation.PermissionManageTags,
-	delegation.PermissionAdmin,
-	delegation.PermissionFull,
+func allPermissions() []delegation.Permission {
+	return []delegation.Permission{
+		delegation.PermissionRead,
+		delegation.PermissionRecord,
+		delegation.PermissionPush,
+		delegation.PermissionPull,
+		delegation.PermissionManageViews,
+		delegation.PermissionManageTags,
+		delegation.PermissionAdmin,
+		delegation.PermissionFull,
+	}
 }
 
 func TestImplicationMatrix(t *testing.T) {
@@ -40,10 +42,10 @@ func TestImplicationMatrix(t *testing.T) {
 		v: {v},
 		g: {g},
 		a: {r, v, g, a},
-		f: allPermissions,
+		f: allPermissions(),
 	}
-	for _, p := range allPermissions {
-		for _, q := range allPermissions {
+	for _, p := range allPermissions() {
+		for _, q := range allPermissions() {
 			want := false
 			for _, i := range implied[p] {
 				want = want || i == q
@@ -87,7 +89,7 @@ func TestParsePermission(t *testing.T) {
 }
 
 func TestPermissionText(t *testing.T) {
-	for _, p := range allPermissions {
+	for _, p := range allPermissions() {
 		b, err := p.MarshalText()
 		require.NoError(t, err)
 		require.Equal(t, string(p), string(b))

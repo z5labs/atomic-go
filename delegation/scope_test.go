@@ -132,7 +132,17 @@ func TestScopeUnmarshal(t *testing.T) {
 	require.Equal(t, delegation.Scope{Permissions: []delegation.Permission{delegation.PermissionPush}}, s)
 
 	require.NoError(t, json.Unmarshal([]byte(`{"permissions":[],"max_changes":null,"description":null,"unknown":{"x":1}}`), &s))
-	require.Equal(t, delegation.Scope{Permissions: []delegation.Permission{}}, s)
+	require.Equal(t, delegation.Scope{}, s, "empty lists decode to nil")
+}
+
+func TestScopeRoundTrip(t *testing.T) {
+	for _, s := range []delegation.Scope{{}, delegation.NewScope(), delegation.NewScope(delegation.PermissionAdmin, delegation.PermissionPull)} {
+		b, err := json.Marshal(s)
+		require.NoError(t, err)
+		var got delegation.Scope
+		require.NoError(t, json.Unmarshal(b, &got))
+		require.Equal(t, s, got, string(b))
+	}
 }
 
 func TestScopeUnmarshalAliases(t *testing.T) {
@@ -181,12 +191,15 @@ func TestScopeUnmarshalRefuses(t *testing.T) {
 		"max_changes as a string":         `{"permissions":["read"],"max_changes":"1"}`,
 		"description not a string":        `{"permissions":["read"],"description":1}`,
 		"truncated":                       `{"permissions":["read"]`,
+		"a second object after it":        `{"permissions":["read"]} {}`,
+		"garbage after it":                `{"permissions":["read"]} x`,
+		"a stray bracket after it":        `{"permissions":["read"]} ]`,
 		"invalid permission element kind": `{"permissions":[["read"]]}`,
 	} {
 		before := delegation.NewScope(delegation.PermissionFull)
 		s := before
-		err := json.Unmarshal([]byte(in), &s)
-		require.Error(t, err, name)
+		err := s.UnmarshalJSON([]byte(in))
+		require.ErrorIs(t, err, delegation.ErrInvalidScope, name)
 		require.Equal(t, before, s, "%s: unchanged on failure", name)
 	}
 }
@@ -203,7 +216,12 @@ func TestScopeUnmarshalErrorKinds(t *testing.T) {
 	err = s.UnmarshalJSON([]byte(`{"permissions":["read"],"projects":[],"repository_patterns":[]}`))
 	require.ErrorIs(t, err, delegation.ErrInvalidScope)
 	require.ErrorContains(t, err, `"projects" and "repository_patterns"`)
+}
 
-	err = s.UnmarshalJSON([]byte(`{"permissions":["read"]} {}`))
-	require.ErrorIs(t, err, delegation.ErrInvalidScope)
+func TestScopeUnmarshalRefusesThroughJSON(t *testing.T) {
+	// The same refusals arrive through encoding/json/v2.
+	for _, in := range []string{`{"servers":[]}`, `{"permissions":["write"]}`, `{"permissions":["read"],"views":[],"stack_patterns":[]}`} {
+		var s delegation.Scope
+		require.ErrorIs(t, json.Unmarshal([]byte(in), &s), delegation.ErrInvalidScope, in)
+	}
 }

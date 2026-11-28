@@ -70,8 +70,10 @@ func NormalizeServer(s string) string {
 // builds it from the request path.
 //
 // A field left "" is not constrained, and [Scope.Allows] does not check the
-// scope's list for it. That is Atomic's absent field; Atomic can also check
-// an empty value against a list, which a ResourceRef cannot express.
+// scope's list for it. That is Atomic's absent field. Atomic can also check
+// a present but empty value against a list, and deny it, which a
+// ResourceRef cannot express: "" here always allows. A server must not map
+// an empty path segment to "" (see [Scope.Allows]).
 type ResourceRef struct {
 	// Server is the server's URL, such as "https://atomic.storage". It is
 	// compared after [NormalizeServer].
