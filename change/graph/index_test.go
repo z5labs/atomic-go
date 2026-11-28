@@ -114,11 +114,14 @@ func TestIndices(t *testing.T) {
 		require.Equal(t, []changefile.HashIndex{1, 2, 3, 4, 5, 6}, slices.Collect(Indices(op)))
 	})
 
-	t.Run("an index held twice is yielded twice", func(t *testing.T) {
+	t.Run("SetAttr yields its inode", func(t *testing.T) {
 		op := SetAttr{Inode: pos(2), Path: "a", Value: Mode(0o644)}
 		require.Equal(t, []changefile.HashIndex{2}, slices.Collect(Indices(op)))
-		op2 := AddRoot{Name: Insertion{Inode: pos(1)}, Inode: Insertion{Inode: pos(1)}}
-		require.Equal(t, []changefile.HashIndex{1, 1}, slices.Collect(Indices(op2)))
+	})
+
+	t.Run("an index held twice is yielded twice", func(t *testing.T) {
+		op := AddRoot{Name: Insertion{Inode: pos(1)}, Inode: Insertion{Inode: pos(1)}}
+		require.Equal(t, []changefile.HashIndex{1, 1}, slices.Collect(Indices(op)))
 	})
 
 	t.Run("Edit follows its atom", func(t *testing.T) {
@@ -212,6 +215,28 @@ func TestRemap(t *testing.T) {
 		require.Equal(t, Utf8, *op.Encoding)
 	})
 
+	t.Run("FileDel contents are renumbered and copied", func(t *testing.T) {
+		op := FileDel{
+			Del:      EdgeUpdate{Inode: pos(1)},
+			Contents: &EdgeUpdate{Edges: []NewEdge{{From: pos(1), To: Node{Change: this}, IntroducedBy: 1}}, Inode: pos(1)},
+			Path:     "a",
+		}
+		got := Remap(op, func(changefile.HashIndex) changefile.HashIndex { return 2 }).(FileDel)
+		require.Equal(t, FileDel{
+			Del:      EdgeUpdate{Inode: pos(2)},
+			Contents: &EdgeUpdate{Edges: []NewEdge{{From: pos(2), To: Node{Change: this}, IntroducedBy: 2}}, Inode: pos(2)},
+			Path:     "a",
+		}, got)
+		require.NotSame(t, op.Contents, got.Contents)
+		require.Equal(t, changefile.HashIndex(1), op.Contents.Edges[0].From.Change)
+	})
+
+	t.Run("a nil FileDel contents stays nil", func(t *testing.T) {
+		op := FileDel{Del: EdgeUpdate{Inode: pos(1)}, Path: "a"}
+		got := Remap(op, func(changefile.HashIndex) changefile.HashIndex { return 2 })
+		require.Equal(t, FileDel{Del: EdgeUpdate{Inode: pos(2)}, Path: "a"}, got)
+	})
+
 	t.Run("an Edit keeps its atom's type", func(t *testing.T) {
 		op := Edit{Change: EdgeUpdate{Inode: pos(1)}, Local: Local{Path: "a"}}
 		got := Remap(op, func(changefile.HashIndex) changefile.HashIndex { return 4 })
@@ -250,7 +275,6 @@ func TestCheck(t *testing.T) {
 		}},
 		{"a v1 edge-less marker naming this change", SolveNameConflict{Name: EdgeUpdate{Inode: pos(this)}, Path: "a"}},
 		{"an op with no checks naming ROOT and this change", FileAdd{AddName: Insertion{Predecessors: []Position{pos(0)}, Inode: pos(this)}, Path: "a"}},
-		{"a nil op", nil},
 	}
 	for _, tc := range accepted {
 		t.Run("accepts "+tc.name, func(t *testing.T) {
@@ -276,6 +300,10 @@ func TestCheck(t *testing.T) {
 			Path: "a",
 		}, changefile.ErrInvalidGraphOp},
 		{"an index out of bounds", FileAdd{AddName: Insertion{Inode: pos(3)}, Path: "a"}, changefile.ErrHashIndexOutOfBounds},
+		{"a nil op", nil, changefile.ErrInvalidGraphOp},
+		{"a pointer op", &SetAttr{Inode: pos(0), Path: "a", Value: Mode(0o644)}, changefile.ErrInvalidGraphOp},
+		{"an Edit with a pointer atom", Edit{Change: &Insertion{Inode: pos(3)}, Local: Local{Path: "a"}}, changefile.ErrInvalidGraphOp},
+		{"an Edit with a nil atom", Edit{Local: Local{Path: "a"}}, changefile.ErrInvalidGraphOp},
 	}
 	for _, tc := range refused {
 		t.Run("refuses "+tc.name, func(t *testing.T) {

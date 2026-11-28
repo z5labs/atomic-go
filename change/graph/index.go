@@ -78,7 +78,10 @@ func Indices(op Op) iter.Seq[changefile.HashIndex] {
 // Renumbering an op into a new file's table is f mapping each old index to
 // the new index of the same hash; [Indices] gives the order to add those
 // hashes to the new table in. An op that is nil or not one of this
-// package's op values is returned as it is.
+// package's op values is returned as it is, and so is an [Edit]'s Change
+// when it is not an [Insertion] or an [EdgeUpdate] value: neither is
+// renumbered or copied. [Check] refuses both, so an op that passes it is
+// renumbered in full.
 func Remap(op Op, f func(changefile.HashIndex) changefile.HashIndex) Op {
 	out, _ := eachIndex(op, func(i *changefile.HashIndex) bool {
 		if *i != changefile.ThisChange {
@@ -96,17 +99,24 @@ func Remap(op Op, f func(changefile.HashIndex) changefile.HashIndex) Op {
 // It resolves every index op holds first, in [Indices] order, and fails as
 // [Resolve] does on the first that is out of bounds, as expansion does.
 // Then a [SetAttr] whose Inode is ROOT is of kind
-// [changefile.ErrInvalidGraphOp]. So is a [SolveNameConflict] or
+// [changefile.ErrInvalidGraphOp]. So is an op that is nil or not one of
+// this package's op values (a pointer to one is not), and an [Edit] whose
+// Change is nil or not an [Insertion] or an [EdgeUpdate] value, whose
+// indices Check cannot read. So is a [SolveNameConflict] or
 // [UnsolveNameConflict] whose Name.Inode, or any edge's To or IntroducedBy,
 // is this change or ROOT, or any edge's From is this change; From may be
 // ROOT. A name-conflict op with no edges is the legacy marker a version 1
 // file may hold, which [Decode] accepts only from version 1, and is not
-// checked, as Atomic does not check it. So is an op that is nil or not one
-// of this package's op values. Every other variant has no checks here.
+// checked, as Atomic does not check it. Every other variant has no checks
+// here.
 //
 // The checks [Decode] and [AppendPayload] run before expansion are not
-// repeated.
+// repeated. Refusing an edge-less name-conflict op outside a version 1
+// file is one of them: Check alone accepts one from any version.
 func Check(op Op, t changefile.HashTable) error {
+	if reason := typeError(op); reason != "" {
+		return formatError(changefile.ErrInvalidGraphOp, reason, nil)
+	}
 	for i := range Indices(op) {
 		if _, err := Resolve(t, i); err != nil {
 			return err
@@ -131,6 +141,24 @@ func Check(op Op, t changefile.HashTable) error {
 		return checkNameConflict(op.Variant(), op.Name, ref, invalid)
 	}
 	return nil
+}
+
+// typeError returns why Check cannot read op's indices, or "" when it can:
+// op is nil or not one of this package's op values, or it is an Edit whose
+// Change is nil or not an Insertion or EdgeUpdate value.
+func typeError(op Op) string {
+	switch op := op.(type) {
+	case FileAdd, DirAdd, DirDel, DirUndel, FileDel, FileUndel, FileMove,
+		Replacement, SolveNameConflict, UnsolveNameConflict, SolveOrderConflict,
+		UnsolveOrderConflict, ResurrectZombies, AddRoot, DelRoot, SetAttr:
+		return ""
+	case Edit:
+		return atomError(op.Change)
+	case nil:
+		return "op is nil"
+	default:
+		return fmt.Sprintf("op is a %T, not one of the graph package's op values", op)
+	}
 }
 
 // checkNameConflict runs Check's rules on the Name of a SolveNameConflict
