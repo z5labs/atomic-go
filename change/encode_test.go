@@ -1,6 +1,7 @@
 package change
 
 import (
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"slices"
@@ -182,6 +183,38 @@ func TestEncodeRoundTrip(t *testing.T) {
 	require.Equal(t, h, againHash)
 }
 
+func TestEncodeRenumbersIntoANewTable(t *testing.T) {
+	c := richChange(t)
+	// The change's own table holds the zero hash in slot 2, behind two
+	// hashes nothing names, and its operations name slot 2 for ROOT.
+	own, err := changefile.NewHashTable([]ident.Hash{hashOf(0xE0), hashOf(0xE1), {}})
+	require.NoError(t, err)
+	want := c.Graph
+	var ops []graph.Op
+	for _, op := range c.Graph {
+		ops = append(ops, graph.Remap(op, func(changefile.HashIndex) changefile.HashIndex { return 2 }))
+	}
+	c.Table, c.Graph = own, ops
+	before := slices.Clone(ops)
+	for i, op := range before {
+		before[i] = graph.Remap(op, func(i changefile.HashIndex) changefile.HashIndex { return i })
+	}
+
+	b, _ := encode(t, c)
+	v, err := Decode(b, newDecoder(t))
+	require.NoError(t, err)
+	require.Equal(t, want, v.Change.Graph)
+	require.Equal(t, []ident.Hash{{}, hashOf(1), hashOf(2), hashOf(3)}, slices.Collect(tableHashes(v.Change.Table)))
+	for _, s := range v.File.Sections {
+		if s.Type == changefile.SectionGraph {
+			require.Equal(t, exampleGraphPayload(t), s.Payload)
+		}
+	}
+
+	// Renumbering did not write through to the change's operations.
+	require.Equal(t, before, c.Graph)
+}
+
 func TestEncodeVersion2WithoutSpan(t *testing.T) {
 	c := richChange(t)
 	c.Version = changefile.Version2
@@ -333,6 +366,9 @@ func TestEncodeChunks(t *testing.T) {
 	}
 }
 
+// TestCheckContentLen tests the helper Encode calls on len(c.Contents),
+// since a test cannot afford the 4 GiB blob that would reach the limit
+// through Encode.
 func TestCheckContentLen(t *testing.T) {
 	require.NoError(t, checkContentLen(1<<32-1))
 	requireFormatError(t, checkContentLen(1<<32), changefile.ErrPayload, changefile.SectionContent)
@@ -407,6 +443,29 @@ func TestEncodeRefuses(t *testing.T) {
 		c.Version = changefile.Version2
 		_, _, err := Encode(c, zstdframe.Stored{}, WholeChunker{})
 		requireFormatError(t, err, changefile.ErrValidation, changefile.SectionSpan)
+	})
+
+	t.Run("a version 3 change without a span", func(t *testing.T) {
+		c := richChange(t)
+		c.Span = nil
+		_, _, err := Encode(c, zstdframe.Stored{}, WholeChunker{})
+		requireFormatError(t, err, changefile.ErrValidation, changefile.SectionSpan)
+	})
+
+	t.Run("a table with no slot left for a graph hash", func(t *testing.T) {
+		// The zero hash and the dependencies fill every slot.
+		deps := make([]ident.Hash, changefile.MaxHashTableEntries-1)
+		for i := range deps {
+			binary.BigEndian.PutUint32(deps[i][:], uint32(i+1))
+		}
+		own, err := changefile.NewHashTable([]ident.Hash{{}, hashOf(0xEE)})
+		require.NoError(t, err)
+		c := workedExampleChange()
+		c.Dependencies = deps
+		c.Table = own
+		c.Graph = []graph.Op{setAttr(1)}
+		_, _, err = Encode(c, zstdframe.Stored{}, WholeChunker{})
+		requireFormatError(t, err, changefile.ErrHashTableFull, 0)
 	})
 
 	t.Run("a graph index outside the change's table", func(t *testing.T) {

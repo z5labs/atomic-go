@@ -217,9 +217,11 @@ func buildTable(c *Change) (changefile.HashTable, []graph.Op, error) {
 			if _, ok := renumber[old]; ok {
 				continue
 			}
-			// Check has resolved every index op holds.
-			h, _ := c.Table.At(old)
-			i, err := b.Add(h)
+			h, err := graph.Resolve(c.Table, old)
+			if err != nil {
+				return changefile.HashTable{}, nil, err
+			}
+			i, err := b.Add(h.Hash)
 			if err != nil {
 				return changefile.HashTable{}, nil, err
 			}
@@ -227,8 +229,20 @@ func buildTable(c *Change) (changefile.HashTable, []graph.Op, error) {
 		}
 	}
 	var ops []graph.Op
-	for _, op := range c.Graph {
-		ops = append(ops, graph.Remap(op, func(i changefile.HashIndex) changefile.HashIndex { return renumber[i] }))
+	for n, op := range c.Graph {
+		// Remap and Indices walk an op separately. An index Remap visits
+		// that Indices did not yield would otherwise become 0, ROOT.
+		var missing []changefile.HashIndex
+		ops = append(ops, graph.Remap(op, func(i changefile.HashIndex) changefile.HashIndex {
+			j, ok := renumber[i]
+			if !ok {
+				missing = append(missing, i)
+			}
+			return j
+		}))
+		if len(missing) > 0 {
+			return changefile.HashTable{}, nil, sectionError(changefile.SectionGraph, changefile.ErrInvalidGraphOp, fmt.Sprintf("op %d: hash index %d was not among the indices it was found to hold", n, missing[0]), nil)
+		}
 	}
 	return b.Table(), ops, nil
 }
