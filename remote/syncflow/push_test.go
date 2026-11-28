@@ -210,6 +210,8 @@ type mapSource struct {
 	sidecars map[ident.Hash][]syncflow.Sidecar
 	tags     map[string][]tags.Record
 
+	sidecarErr, tagErr error
+
 	tagViews []string
 }
 
@@ -222,11 +224,17 @@ func (s *mapSource) Change(_ context.Context, h ident.Hash) ([]byte, error) {
 }
 
 func (s *mapSource) SidecarsCovering(_ context.Context, h ident.Hash) ([]syncflow.Sidecar, error) {
+	if s.sidecarErr != nil {
+		return nil, s.sidecarErr
+	}
 	return s.sidecars[h], nil
 }
 
 func (s *mapSource) Tags(_ context.Context, view string) ([]tags.Record, error) {
 	s.tagViews = append(s.tagViews, view)
+	if s.tagErr != nil {
+		return nil, s.tagErr
+	}
 	return s.tags[view], nil
 }
 
@@ -266,6 +274,9 @@ func TestBuildPack(t *testing.T) {
 	provC2C3 := sidecar(syncproto.Provenance, "provenance c2 c3", "c2", "c3")
 	outside := sidecar(syncproto.Attest, "attest c3 c9", "c3", "c9")
 	unstored := sidecar(syncproto.Provenance, "provenance c1", "c1")
+	// Returned for a stored change, but covering only c1, which is in the
+	// chain and not stored.
+	coversUnstored := sidecar(syncproto.Attest, "attest c1", "c1")
 	tag := tags.Record{
 		Name:       "v1",
 		View:       "feature",
@@ -284,7 +295,7 @@ func TestBuildPack(t *testing.T) {
 		},
 		sidecars: map[ident.Hash][]syncflow.Sidecar{
 			hash("c1"): {unstored},
-			hash("c2"): {provC2C3, attestC2},
+			hash("c2"): {provC2C3, coversUnstored, attestC2},
 			// A provenance graph before an attestation, a duplicate and one
 			// covering a change outside the chain.
 			hash("c3"): {provC3, attestC1C3, provC2C3, outside, attestC2},
@@ -377,6 +388,27 @@ func TestBuildPackErrors(t *testing.T) {
 		}
 		_, err := syncflow.BuildPack(ctx, plan, src)
 		require.ErrorIs(t, err, tags.ErrInvalidRecord)
+	})
+	t.Run("a failing SidecarsCovering", func(t *testing.T) {
+		errSidecars := errors.New("sidecars unreadable")
+		src := &mapSource{
+			changes:    map[ident.Hash][]byte{hash("c1"): []byte("file c1")},
+			sidecarErr: errSidecars,
+		}
+		pack, err := syncflow.BuildPack(ctx, plan, src)
+		require.ErrorIs(t, err, errSidecars)
+		require.Empty(t, pack.Objects)
+		require.Empty(t, src.tagViews)
+	})
+	t.Run("a failing Tags", func(t *testing.T) {
+		errTags := errors.New("tags unreadable")
+		src := &mapSource{
+			changes: map[ident.Hash][]byte{hash("c1"): []byte("file c1")},
+			tagErr:  errTags,
+		}
+		pack, err := syncflow.BuildPack(ctx, plan, src)
+		require.ErrorIs(t, err, errTags)
+		require.Empty(t, pack.Objects)
 	})
 }
 
