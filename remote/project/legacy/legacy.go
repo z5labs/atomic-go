@@ -1,6 +1,6 @@
-// Package legacy is a client for the query-string reads of a project's
-// protocol endpoint: the requests older servers and tools answer at the
-// /code URL with a query such as ?view=dev&state=.
+// Package legacy is a client for the query-string reads and writes of a
+// project's protocol endpoint: the requests older servers and tools answer
+// at the /code URL with a query such as ?view=dev&state=.
 //
 // Nothing calls these. The Atomic CLI moved every push, pull and clone to
 // the sync protocol and the refs/views inventory, which package project
@@ -15,14 +15,27 @@
 // [Client.ListTags] and one tag with [Client.DownloadTag]; an attestation
 // with [Client.DownloadAttestation]; provenance graphs with
 // [Client.ProvenanceList] and [Client.DownloadProvenance]; and the
-// remote's views with [Client.ListViews] and [Client.ViewManifest]. Every
-// failed request comes back as a [*remote.Error] whose [remote.Kind] is
-// the one the Atomic CLI maps the same failure to.
+// remote's views with [Client.ListViews] and [Client.ViewManifest].
+//
+// It uploads a change into a view with [Client.UploadChange], or streamed
+// with [Client.UploadChangeFrom], and stores one without a view with
+// [Client.StoreChange]; declares a view's log with
+// [Client.PutViewManifest]; uploads a tag with [Client.UploadTag], an
+// attestation with [Client.UploadAttestation] and a provenance graph with
+// [Client.UploadProvenance]; and forks a view with [Client.ForkView].
+// [HashTokens] finds the change hashes in a server's error text, as a
+// refused upload's [remote.KindMissingDependencies] lists them.
+//
+// Every failed request comes back as a [*remote.Error] whose [remote.Kind]
+// is the one the Atomic CLI maps the same failure to.
 //
 // The requests are documented in docs/remote/endpoints/project.md, under
-// Reads, their bodies in docs/remote/types.md, under StateResponse and
-// ChangelistEntry, and their failures in docs/remote/errors.md, under
-// Project-protocol failures.
+// Reads and Writes, their bodies in docs/remote/types.md, under
+// StateResponse and ChangelistEntry, and their failures in
+// docs/remote/errors.md, under Project-protocol failures and Server text
+// the client recognises. Recognising a failure by the English text of the
+// server's message is the Rust client's behaviour, and an open question
+// there (docs/remote/errors.md#open-questions).
 //
 // # Host dependencies
 //
@@ -75,8 +88,8 @@ func WithUserAgent(ua string) Option {
 	}
 }
 
-// Client sends the query-string reads to one project URL. It is safe for
-// concurrent use as long as its [project.Doer] and logger are.
+// Client sends the query-string reads and writes to one project URL. It is
+// safe for concurrent use as long as its [project.Doer] and logger are.
 type Client struct {
 	url       serverurl.Project
 	requester *wire.Requester

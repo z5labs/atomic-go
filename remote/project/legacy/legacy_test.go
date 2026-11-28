@@ -46,10 +46,11 @@ type reply struct {
 
 // request is what the server saw of one request.
 type request struct {
-	method     string
-	requestURI string
-	header     http.Header
-	body       []byte
+	method        string
+	requestURI    string
+	header        http.Header
+	contentLength int64
+	body          []byte
 }
 
 // server answers each request by its RawQuery and records what it saw.
@@ -62,7 +63,7 @@ type server struct {
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
-	s.seen = append(s.seen, request{method: r.Method, requestURI: r.RequestURI, header: r.Header.Clone(), body: body})
+	s.seen = append(s.seen, request{method: r.Method, requestURI: r.RequestURI, header: r.Header.Clone(), contentLength: r.ContentLength, body: body})
 	rep, ok := s.routes[r.URL.RawQuery]
 	if !ok {
 		http.Error(w, "unexpected query "+r.URL.RawQuery, http.StatusTeapot)
