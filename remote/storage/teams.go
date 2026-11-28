@@ -49,6 +49,11 @@ func (v *TeamVisibility) UnmarshalText(b []byte) error {
 // also be spelled org_id, created_at and updated_at. Every member but
 // description is required, and visibility must be exactly "visible" or
 // "secret"; a member written twice, or under both spellings, is refused.
+//
+// The visibility check is the Rust client's: its TeamVisibility is a serde
+// enum, so a team with any other visibility fails to decode there too, and
+// with it the whole of a [Teams.List] reply. A role, by contrast, is kept
+// as the server sent it; see [TeamMemberInfo].
 type TeamInfo struct {
 	// ID is the team's ID, which a grant names as its subject.
 	ID uuid.UUID `json:"id"`
