@@ -106,6 +106,19 @@ func with(t *testing.T, name string, v any) canonical.Document {
 	return d
 }
 
+// goldenProofWith returns the golden certificate's proof members with one
+// more member, name, set to value.
+func goldenProofWith(name, value string) map[string]string {
+	return map[string]string{
+		"@type":              canonical.ProofType,
+		"cryptosuite":        canonical.Cryptosuite,
+		"proofPurpose":       canonical.ProofPurpose,
+		"proofValue":         "z4cm9Ncv4BjaNCCeXPPrn8dgZLmhzSK9GyTeFkq9ZWtxM7u5agzoeSfJH6y69CPZEiJqMi69r6hdkT3gasL7zZYGr",
+		"verificationMethod": "did:atomic:NQYQIETI6RYWBHDZ6XZNXTBY4SSKWL2NIFQQTJHAT7HVB7IPABRA#key-1",
+		name:                 value,
+	}
+}
+
 func TestCertificateConstants(t *testing.T) {
 	require.Equal(t, "Atomic-Delegation", delegation.HeaderName)
 	require.Equal(t, 16384, delegation.MaxHeaderLen)
@@ -267,19 +280,21 @@ func TestParseCertificateRefuses(t *testing.T) {
 		name  string
 		value any
 	}{
-		"@id not a string":          {"@id", 7},
-		"@id not an id":             {"@id", "urn:atomic:delegation:nope"},
-		"@type null":                {"@type", nil},
-		"delegate not a DID":        {"delegate", "did:web:example.com"},
-		"delegateKey not a DID":     {"delegateKey", "did:key:zzz"},
-		"issued not a time":         {"issued", "yesterday"},
-		"expires not a time":        {"expires", "2026-12-24"},
-		"expires empty":             {"expires", ""},
-		"expires a number":          {"expires", 1798104600},
-		"attributedTo a number":     {"attributedTo", 1},
-		"softwareAgent an object":   {"softwareAgent", map[string]string{}},
-		"proof with unknown member": {"proof", map[string]string{"extra": "x"}},
-		"scope without permissions": {"scope", map[string][]string{"servers": {}}},
+		"@id not a string":                  {"@id", 7},
+		"@id not an id":                     {"@id", "urn:atomic:delegation:nope"},
+		"@type null":                        {"@type", nil},
+		"delegate not a DID":                {"delegate", "did:web:example.com"},
+		"delegateKey not a DID":             {"delegateKey", "did:key:zzz"},
+		"issued not a time":                 {"issued", "yesterday"},
+		"expires not a time":                {"expires", "2026-12-24"},
+		"expires empty":                     {"expires", ""},
+		"expires a number":                  {"expires", 1798104600},
+		"attributedTo a number":             {"attributedTo", 1},
+		"softwareAgent an object":           {"softwareAgent", map[string]string{}},
+		"proof with unknown member":         {"proof", goldenProofWith("extra", "x")},
+		"expires the zero time":             {"expires", "0001-01-01T00:00:00Z"},
+		"expires the zero time with offset": {"expires", "0001-01-01T00:00:00+00:00"},
+		"scope without permissions":         {"scope", map[string][]string{"servers": {}}},
 	}
 	for label, tc := range bad {
 		t.Run(label, func(t *testing.T) {
@@ -644,10 +659,10 @@ func TestCertificateJSON(t *testing.T) {
 	require.Equal(t, goldenHeader, e.Certificate.HeaderValue())
 	require.NoError(t, e.Certificate.Verify(human(t).PublicKey()))
 
-	var c delegation.Certificate
+	c := goldenCertificate(t)
 	require.ErrorIs(t, c.UnmarshalJSON([]byte(`null`)), delegation.ErrInvalid)
 	require.ErrorIs(t, c.UnmarshalJSON([]byte(`{}`)), delegation.ErrInvalid)
-	require.Equal(t, "", c.HeaderValue(), "unchanged on failure")
+	require.Equal(t, goldenHeader, c.HeaderValue(), "unchanged on failure")
 
 	_, err = delegation.Certificate{}.MarshalJSON()
 	require.ErrorIs(t, err, delegation.ErrInvalid)

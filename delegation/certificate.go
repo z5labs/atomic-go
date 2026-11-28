@@ -60,8 +60,10 @@ type AgentDelegation struct {
 	// verifies.
 	Type string
 
-	// AttributedTo is the signer's did:atomic, filled in at signing, or ""
-	// when the document has none.
+	// AttributedTo names the document's author, or is "" when the document
+	// has none. Atomic fills in the signer's did:atomic at signing, but keeps
+	// any value already there, and nothing verifies it: a certificate that
+	// verifies may name somebody else here. Trust Delegator, not this.
 	AttributedTo string
 
 	// ContentHash is "blake3:" followed by 64 lowercase hex digits.
@@ -281,7 +283,8 @@ func ParseCertificate(b []byte) (Certificate, error) {
 // [canonical.Proof] and a [Scope]. Each DID must parse ([identity.ParseDID]),
 // @id must be a delegation id ([ParseID]), and issued an RFC 3339 time.
 // expires may be absent or null, which is a certificate that never expires,
-// or an RFC 3339 time. attributedTo and softwareAgent may be absent, null or
+// or an RFC 3339 time other than 0001-01-01T00:00:00Z, which is Go's zero
+// time and so would read as no expiry at all. attributedTo and softwareAgent may be absent, null or
 // a string. @context is not required, and is read only when it is a string.
 // Other members are kept and ignored.
 //
@@ -353,6 +356,9 @@ func parseAgentDelegation(d canonical.Document) (AgentDelegation, error) {
 	if isText(d, memberExpires) {
 		if a.Expires, err = chrono.Parse(expires); err != nil {
 			return AgentDelegation{}, fmt.Errorf("member %q: %w", memberExpires, err)
+		}
+		if a.Expires.IsZero() {
+			return AgentDelegation{}, fmt.Errorf("member %q is the zero time, which would read as no expiry", memberExpires)
 		}
 	}
 	issued, err := requiredText(d, memberIssued)
