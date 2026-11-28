@@ -155,7 +155,9 @@ func (d Delegations) List(ctx context.Context) ([]DelegationInfo, error) {
 }
 
 // Revoke revokes the delegation id names and returns it as the server now
-// holds it: POST /delegations/{id}/revoke.
+// holds it: POST /delegations/{id}/revoke. The ID of a [DelegationInfo]
+// the server listed is its unchecked text; [delegation.ParseID] reads it,
+// as does the certificate's own [delegation.Certificate.ID].
 //
 // It refuses, with an error wrapping [ErrInvalidArgument] and nothing sent,
 // the zero id, which names no delegation, a req.Revocation that is the zero

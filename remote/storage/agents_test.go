@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -87,6 +88,10 @@ func TestAgentIdentityInfoReadsTheDocsBodies(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(enrolledAgent), &enrolled))
 	require.Equal(t, wantEnrolledAgent(), enrolled)
 	require.Nil(t, enrolled.PublishedDelegations)
+
+	var nulls storage.AgentIdentityInfo
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSuffix(enrolledAgent, "}")+`, "delegationsValidFrom": null, "publishedDelegations": null}`), &nulls))
+	require.Equal(t, wantEnrolledAgent(), nulls)
 
 	var full storage.AgentIdentityInfo
 	require.NoError(t, json.Unmarshal([]byte(fullAgent), &full))
@@ -249,6 +254,20 @@ func TestAgentsSetEpochSendsNoBody(t *testing.T) {
 	require.Empty(t, got.body)
 	require.Equal(t, int64(0), rec.contentLength)
 	require.Equal(t, []string{"application/json"}, rec.header.Values("Content-Type"))
+}
+
+func TestAgentsDeletesSucceedWhateverTheBody(t *testing.T) {
+	for name, h := range map[string]http.HandlerFunc{
+		"an envelope":   raw(http.StatusOK, envelope(enrolledAgent)),
+		"not JSON":      raw(http.StatusOK, "retired"),
+		"a failed body": raw(http.StatusAccepted, `{"success": false}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _ := serve(t, "DELETE /identities/agents/", h)
+			require.NoError(t, c.Agents().Retire(t.Context(), agentID))
+			require.NoError(t, c.Agents().ClearEpoch(t.Context(), agentID))
+		})
+	}
 }
 
 func TestAgentsClearEpoch(t *testing.T) {
