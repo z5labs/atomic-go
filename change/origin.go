@@ -143,7 +143,8 @@ type Origin struct {
 	Parents []GitObjectID
 
 	// Derivation says how a GitSynthesized change was derived. A
-	// GitResolution or Native origin has none, and leaves it zero.
+	// GitResolution or Native origin has none, and leaves it zero, which
+	// is the same value as DerivationRoot.
 	Derivation GitDerivation
 }
 
@@ -156,8 +157,10 @@ type Origin struct {
 // number for the other three.
 //
 // A [Native] origin is valid when it has no Git fields. Validate also
-// refuses an unknown kind or derivation, and a Derivation on an origin
-// that has none, since the HEADER payload could not carry either.
+// refuses an unknown kind or derivation, and a Derivation other than
+// [DerivationRoot] on a Native or GitResolution origin, since the HEADER
+// payload could not carry either. DerivationRoot is GitDerivation's zero
+// value, so on those origins it reads as "no derivation" and passes.
 //
 // Validate does not check the rule that a [GitResolution] has at least two
 // parents, which depends on the rest of the change and is checked with it.
@@ -166,8 +169,13 @@ type Origin struct {
 func (o Origin) Validate() error {
 	switch o.Kind {
 	case Native:
-		if !o.Commit.isZero() || len(o.Parents) > 0 || o.Derivation != 0 {
-			return fmt.Errorf("%w: a Native origin has Git fields", ErrInvalidOrigin)
+		switch {
+		case !o.Commit.isZero():
+			return fmt.Errorf("%w: a Native origin has a commit", ErrInvalidOrigin)
+		case len(o.Parents) > 0:
+			return fmt.Errorf("%w: a Native origin has %d parents", ErrInvalidOrigin, len(o.Parents))
+		case o.Derivation != DerivationRoot:
+			return fmt.Errorf("%w: a Native origin has derivation %s", ErrInvalidOrigin, o.Derivation)
 		}
 		return nil
 	case GitSynthesized, GitResolution:
@@ -188,7 +196,7 @@ func (o Origin) Validate() error {
 	}
 
 	if o.Kind == GitResolution {
-		if o.Derivation != 0 {
+		if o.Derivation != DerivationRoot {
 			return fmt.Errorf("%w: a GitResolution origin has derivation %s", ErrInvalidOrigin, o.Derivation)
 		}
 		return nil

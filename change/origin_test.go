@@ -69,6 +69,12 @@ func TestOriginValidate(t *testing.T) {
 		{"Native with a parent", change.Origin{Kind: change.Native, Parents: []change.GitObjectID{sha1ID(1)}}, false},
 		{"Native with a derivation", change.Origin{Kind: change.Native, Derivation: change.DerivationSquash}, false},
 		{
+			// DerivationRoot is the zero value, so it reads as no derivation.
+			"Native with DerivationRoot",
+			change.Origin{Kind: change.Native, Derivation: change.DerivationRoot},
+			true,
+		},
+		{
 			"GitResolution with 2 parents",
 			change.Origin{Kind: change.GitResolution, Commit: sha1ID(1), Parents: []change.GitObjectID{sha1ID(2), sha1ID(3)}},
 			true,

@@ -23,6 +23,10 @@ type Header struct {
 	// the text it was read from and an encoded one writes it back
 	// unchanged. Empty means Timestamp is formatted the way chrono
 	// formats it.
+	//
+	// When TimestampText is set it takes precedence: it is written as it
+	// is, and Timestamp is not consulted. Clear it after changing
+	// Timestamp, or the old instant is what gets written.
 	TimestampText string
 
 	// Authors are the change's authors, in order. The list may be empty.
