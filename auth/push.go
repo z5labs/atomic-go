@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/z5labs/atomic-go/identity"
 	"github.com/z5labs/atomic-go/remote/serverurl"
 )
 
@@ -132,29 +133,56 @@ func (e *AuthenticationError) Unwrap() error {
 // error from store's [Directory] is not an AuthenticationError: it is
 // returned wrapped, as [Resolve] returns it.
 func CheckPushCredentials(ctx context.Context, store PushStore, p serverurl.Project, sel Selection) error {
+	_, _, err := resolveSigner(ctx, store, p, sel)
+	var authErr *AuthenticationError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &authErr):
+		return err
+	default:
+		return fmt.Errorf("auth: CheckPushCredentials: %w", err)
+	}
+}
+
+// resolveSigner resolves the identity to authenticate to p as and loads its
+// signer, failing as [CheckPushCredentials] documents. An
+// [*AuthenticationError] is returned as it is; any other error is returned
+// unwrapped, for the caller to name itself in.
+func resolveSigner(ctx context.Context, store PushStore, p serverurl.Project, sel Selection) (identity.Identity, identity.Signer, error) {
 	choice := ChooseName(p, sel)
 	id, ok, err := resolveChoice(ctx, store, choice)
 	if err != nil {
-		return fmt.Errorf("auth: CheckPushCredentials: %w", err)
+		return identity.Identity{}, nil, err
 	}
 	if !ok {
 		if choice.Explicit() {
-			return &AuthenticationError{Remote: p.String(), Issue: ExplicitIdentityNotFound, Name: choice.Name}
+			return identity.Identity{}, nil, &AuthenticationError{Remote: p.String(), Issue: ExplicitIdentityNotFound, Name: choice.Name}
 		}
-		return &AuthenticationError{Remote: p.String(), Issue: NoIdentity}
+		return identity.Identity{}, nil, &AuthenticationError{Remote: p.String(), Issue: NoIdentity}
 	}
-	s, err := store.Signer(ctx, id.PublicKey.ID())
-	if err != nil && ctx.Err() != nil {
-		return fmt.Errorf("auth: CheckPushCredentials: %w", ctx.Err())
+	s, err := loadSigner(ctx, store, id)
+	if err != nil {
+		if ctx.Err() != nil {
+			return identity.Identity{}, nil, ctx.Err()
+		}
+		return identity.Identity{}, nil, &AuthenticationError{Remote: p.String(), Issue: KeypairUnavailable, Name: id.Name, Err: err}
 	}
+	return id, s, nil
+}
+
+// loadSigner loads id's signer from keys and checks that it holds id's key.
+// A nil signer, and one holding another key, are errors wrapping
+// [ErrKeyUnavailable]; an error from keys is returned as it is.
+func loadSigner(ctx context.Context, keys KeyLoader, id identity.Identity) (identity.Signer, error) {
+	s, err := keys.Signer(ctx, id.PublicKey.ID())
 	switch {
 	case err != nil:
+		return nil, err
 	case s == nil:
-		err = fmt.Errorf("%w: the key loader returned no signer", ErrKeyUnavailable)
+		return nil, fmt.Errorf("%w: the key loader returned no signer", ErrKeyUnavailable)
 	case s.PublicKey() != id.PublicKey:
-		err = fmt.Errorf("%w: the loaded key is not the identity's", ErrKeyUnavailable)
-	default:
-		return nil
+		return nil, fmt.Errorf("%w: the loaded key is not the identity's", ErrKeyUnavailable)
 	}
-	return &AuthenticationError{Remote: p.String(), Issue: KeypairUnavailable, Name: id.Name, Err: err}
+	return s, nil
 }

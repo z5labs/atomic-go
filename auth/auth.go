@@ -28,6 +28,16 @@
 // fails a push early, with an [*AuthenticationError] naming the
 // [CredentialIssue], when no identity resolves or its key will not load.
 //
+// [Bearer] is the Credentials of one identity: it mints a fresh token on every
+// request, and for a delegated identity sends its certificate beside it,
+// re-checking the certificate's expiry each time. [NewBearer] builds one from a
+// signer; an [Issuer] builds one from an identity in a [Store], choosing the
+// certificate with [delegation.Choose]. [Issuer.ForRemote] fails closed, and
+// [Issuer.ForRemoteOrAnonymous] falls back to [NoCredentials] with a warning,
+// as the Rust client does. The audience is always the caller's;
+// [ProjectAudience] and [ManagementAudience] give the one the Rust client
+// uses for each protocol (docs/remote/auth.md#audience).
+//
 // The identity store is the caller's: this package sees it only through the
 // small interfaces it declares, [Directory], [KeyLoader], [CertificateStore]
 // and [RevocationList], composed into [PushStore] and [Store]. [Keyring] is an
@@ -36,8 +46,9 @@
 //
 // Nothing here reads the host: the wrapped transport, the credentials and
 // the origin are all arguments to [NewTransport], the environment's values
-// come in a [Selection], and the identities, keys and certificates come
-// through a [Store].
+// come in a [Selection], the identities, keys and certificates come
+// through a [Store], and the clock, the random source of token ids and the
+// logger of the anonymous fallback are arguments too.
 package auth
 
 import (
@@ -45,8 +56,9 @@ import (
 	"net/http"
 )
 
-// ErrInvalidArgument is wrapped by every error [NewTransport] and
-// [NewKeyring] return for an argument they refused.
+// ErrInvalidArgument is wrapped by every error [NewTransport],
+// [NewKeyring], [NewBearer] and [NewIssuer] return for an argument they
+// refused.
 var ErrInvalidArgument = errors.New("auth: invalid argument")
 
 // Credentials adds the headers that authenticate one request, such as
