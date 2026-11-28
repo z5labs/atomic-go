@@ -233,6 +233,12 @@ func decodeDeps(b []byte, t changefile.HashTable) ([]ident.Hash, error) {
 // [changefile.ErrInvalidChangeMetadata] an index of 0, an index of
 // [changefile.ThisChange], and one that is not greater than the index
 // before it.
+//
+// Like write_dependencies, it takes indices and never sees the hashes, so
+// it cannot check the schema version 2 and 3 rule that the dependency
+// hashes are strictly ascending. That rule is the caller's: Change.Validate
+// checks it, and Change::serialize's table puts the sorted dependencies at
+// indices 1 to n, which makes ascending hashes ascending indices.
 func appendDeps(dst []byte, deps []changefile.HashIndex) ([]byte, error) {
 	for n, i := range deps {
 		switch {

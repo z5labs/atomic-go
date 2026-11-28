@@ -172,10 +172,30 @@ func TestHeaderV1Example(t *testing.T) {
 	})
 
 	t.Run("a v1 header cannot carry the envelope", func(t *testing.T) {
-		env := want
-		env.metadata = []byte{1}
-		_, err := appendHeader(nil, changefile.Version1, env, changefile.HashTable{})
-		requireFormatError(t, err, changefile.ErrInvalidChangeMetadata, changefile.SectionHeader)
+		sha1 := GitObjectID{Bytes: bytes.Repeat([]byte{1}, SHA1Size)}
+		testCases := []struct {
+			name string
+			set  func(*envelope)
+		}{
+			{"a Snapshot kind", func(e *envelope) { e.kind.Snapshot = true }},
+			{"a working copy", func(e *envelope) { e.kind.WorkingCopy[0] = 1 }},
+			{"supersedes", func(e *envelope) { e.supersedes = ptr(hashOf(1)) }},
+			{"a Git origin", func(e *envelope) { e.origin = Origin{Kind: GitSynthesized, Commit: sha1} }},
+			{"a Native origin with a commit", func(e *envelope) { e.origin.Commit = sha1 }},
+			{"a causal frontier", func(e *envelope) { e.causalFrontier = []ident.Hash{hashOf(1)} }},
+			{"extra_known", func(e *envelope) { e.extraKnown = []ident.Hash{hashOf(1)} }},
+			{"metadata", func(e *envelope) { e.metadata = []byte{1} }},
+		}
+		for _, tc := range testCases {
+			t.Run(tc.name, func(t *testing.T) {
+				env := want
+				tc.set(&env)
+				dst := []byte{0x77}
+				got, err := appendHeader(dst, changefile.Version1, env, changefile.HashTable{})
+				requireFormatError(t, err, changefile.ErrInvalidChangeMetadata, changefile.SectionHeader)
+				require.Equal(t, dst, got, "nothing is appended")
+			})
+		}
 	})
 }
 
