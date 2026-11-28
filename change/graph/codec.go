@@ -287,7 +287,9 @@ func decodeInodeAttr(d *postcard.Decoder) InodeAttr {
 // AppendPayload appends the GRAPH payload of p to dst: p's fields in wire
 // order, every varint minimal and every [EdgeFlags] byte as held. A
 // [Payload] that [Decode] returned is written back to the bytes it came
-// from, provided they were minimal.
+// from, provided they were minimal. The exception is a version 1 payload
+// that holds a legacy name-conflict marker. Decode accepts the marker, but
+// AppendPayload refuses it, as Atomic refuses to write one.
 //
 // It checks p first, and on failure returns dst unchanged and a
 // *[changefile.FormatError] in [changefile.SectionGraph], with no offset.

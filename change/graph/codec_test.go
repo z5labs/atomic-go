@@ -628,23 +628,34 @@ func TestSetAttr_Rules(t *testing.T) {
 }
 
 func TestSetAttr_DecodeErrors(t *testing.T) {
+	// A payload of one SetAttr, inode {1, 7}, path "f", whose value starts
+	// at offset 7. Each tail is the rest of the payload: the value as far
+	// as it goes, then the content range where the value is whole.
 	testCases := []struct {
-		name  string
-		value []byte
-		cause error
+		name   string
+		tail   []byte
+		cause  error
+		offset int64
 	}{
-		{name: "unknown attribute variant", value: []byte{0x02, 0x00}, cause: postcard.ErrUnknownVariant},
-		{name: "unknown inode kind", value: []byte{0x01, 0x03}, cause: postcard.ErrUnknownVariant},
-		{name: "mode overflows u16", value: []byte{0x00, 0xff, 0xff, 0x04}, cause: postcard.ErrBadVarint},
-		{name: "value missing", value: nil, cause: postcard.ErrUnexpectedEnd},
+		{name: "unknown attribute variant", tail: []byte{0x02, 0x00, 0x00, 0x00}, cause: postcard.ErrUnknownVariant, offset: 7},
+		{name: "unknown inode kind", tail: []byte{0x01, 0x03, 0x00, 0x00}, cause: postcard.ErrUnknownVariant, offset: 8},
+		{name: "mode overflows u16", tail: []byte{0x00, 0xff, 0xff, 0x04, 0x00, 0x00}, cause: postcard.ErrBadVarint, offset: 8},
+		{name: "value missing", tail: nil, cause: postcard.ErrUnexpectedEnd, offset: 7},
+		{name: "mode missing", tail: []byte{0x00}, cause: postcard.ErrUnexpectedEnd, offset: 8},
+		{name: "mode truncated", tail: []byte{0x00, 0xa4}, cause: postcard.ErrUnexpectedEnd, offset: 8},
+		{name: "kind missing", tail: []byte{0x01}, cause: postcard.ErrUnexpectedEnd, offset: 8},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			b := cat([]byte{0x00, 0x01, 0x10, 0x01, 0x07, 0x01, 'f'}, tc.value, []byte{0x00, 0x00})
+			b := cat([]byte{0x00, 0x01, 0x10, 0x01, 0x07, 0x01, 'f'}, tc.tail)
 			p, err := Decode(b, changefile.Version2)
 			requireFormatError(t, err, changefile.ErrPayload)
 			require.ErrorIs(t, err, tc.cause)
 			require.Equal(t, Payload{}, p)
+
+			var pe *postcard.Error
+			require.ErrorAs(t, err, &pe)
+			require.Equal(t, tc.offset, pe.Offset)
 		})
 	}
 }
@@ -653,6 +664,14 @@ func TestNameConflict_Rules(t *testing.T) {
 	alive, deleted := Folder|Block, Folder|Block|Deleted
 	edge := func(previous, flag EdgeFlags, start, end uint32) NewEdge {
 		return NewEdge{Previous: previous, Flag: flag, From: Position{Change: 0, Pos: 0}, To: Node{Change: 1, Start: start, End: end}, IntroducedBy: 1}
+	}
+	from := func(e NewEdge, p Position) NewEdge {
+		e.From = p
+		return e
+	}
+	introducedBy := func(e NewEdge, h changefile.HashIndex) NewEdge {
+		e.IntroducedBy = h
+		return e
 	}
 	update := func(edges ...NewEdge) EdgeUpdate {
 		return EdgeUpdate{Edges: edges, Inode: Position{Change: 1, Pos: 9}}
@@ -672,6 +691,10 @@ func TestNameConflict_Rules(t *testing.T) {
 		{name: "Unsolve 0x91 to 0x11", op: unsolve("f", edge(deleted, alive, 0, 3))},
 		{name: "Solve with distinct edges", op: solve("f", edge(alive, deleted, 0, 3), edge(alive, deleted, 3, 5))},
 		{name: "Unsolve with distinct edges", op: unsolve("f", edge(deleted, alive, 0, 3), edge(deleted, alive, 3, 5))},
+		// A repeat is the whole edge: the same To with another From or
+		// IntroducedBy is a distinct edge.
+		{name: "Solve same To, other From", op: solve("f", edge(alive, deleted, 0, 3), from(edge(alive, deleted, 0, 3), Position{Change: 2, Pos: 1}))},
+		{name: "Solve same To, other IntroducedBy", op: solve("f", edge(alive, deleted, 0, 3), introducedBy(edge(alive, deleted, 0, 3), 2))},
 	}
 	for _, tc := range passes {
 		t.Run(tc.name, func(t *testing.T) {
