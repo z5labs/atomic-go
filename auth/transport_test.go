@@ -365,3 +365,67 @@ func TestTransportIsSafeForConcurrentUse(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportGivesAttachAHeaderMap(t *testing.T) {
+	rec := &recorder{}
+	tr := newTransport(t, rec.transport(), fakeCreds{}, "https://atomic.example")
+
+	req := &http.Request{Method: http.MethodGet, URL: mustURL(t, "https://atomic.example/p")}
+	resp, err := tr.RoundTrip(req)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+
+	got := rec.requests()
+	require.Len(t, got, 1)
+	require.Equal(t, testToken, got[0].header.Get("Authorization"))
+	require.Nil(t, req.Header)
+}
+
+func TestTransportMatchesIPv6ZonesCaseSensitively(t *testing.T) {
+	testCases := []struct {
+		url      string
+		attached bool
+	}{
+		{url: "http://[fe80::1%25en0]:8080/p", attached: true},
+		{url: "http://[FE80::1%25en0]:8080/p", attached: true},
+		{url: "http://[fe80::1%25EN0]:8080/p", attached: false},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.url, func(t *testing.T) {
+			rec := &recorder{}
+			tr := newTransport(t, rec.transport(), fakeCreds{}, "http://[FE80::1%25en0]:8080")
+
+			roundTrip(t, tr, tc.url)
+
+			got := rec.requests()
+			require.Len(t, got, 1)
+			if tc.attached {
+				require.Equal(t, testToken, got[0].header.Get("Authorization"))
+			} else {
+				require.NotContains(t, got[0].header, "Authorization")
+			}
+		})
+	}
+}
+
+// idleCloser is a base transport that records CloseIdleConnections.
+type idleCloser struct {
+	http.RoundTripper
+	calls chan struct{}
+}
+
+func (c idleCloser) CloseIdleConnections() {
+	c.calls <- struct{}{}
+}
+
+func TestTransportForwardsCloseIdleConnections(t *testing.T) {
+	base := idleCloser{RoundTripper: (&recorder{}).transport(), calls: make(chan struct{}, 1)}
+	tr := newTransport(t, base, fakeCreds{}, "https://atomic.example")
+
+	(&http.Client{Transport: tr}).CloseIdleConnections()
+	require.Len(t, base.calls, 1)
+
+	// A base without the method is left alone.
+	plain := newTransport(t, (&recorder{}).transport(), fakeCreds{}, "https://atomic.example")
+	require.NotPanics(t, plain.CloseIdleConnections)
+}

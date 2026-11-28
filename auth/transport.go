@@ -76,7 +76,8 @@ func NewTransport(base http.RoundTripper, creds Credentials, origin *url.URL) (*
 // the clone is passed to [Credentials.Attach], and the clone is sent. A
 // request bound for any other origin, including one whose URL has no host,
 // is passed to the wrapped transport as it is. Either way req itself is
-// never modified.
+// never modified. A clone of a request with a nil Header is given an empty
+// one, so Attach can always set headers on it.
 //
 // If Attach fails, RoundTrip returns its error without calling the wrapped
 // transport, and closes req.Body when there is one, as the
@@ -91,6 +92,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	out := req.Clone(req.Context())
+	if out.Header == nil {
+		// A hand-built request may carry no header map; Attach is promised
+		// one it can set headers on.
+		out.Header = make(http.Header)
+	}
 	if err := t.creds.Attach(out); err != nil {
 		if req.Body != nil {
 			// The round trip has already failed; a Close error is the
@@ -100,6 +106,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("auth: attaching credentials: %w", err)
 	}
 	return t.base.RoundTrip(out)
+}
+
+// CloseIdleConnections closes the idle connections of the wrapped
+// transport, when it has a CloseIdleConnections method, so that
+// [http.Client.CloseIdleConnections] still reaches it through a Transport.
+func (t *Transport) CloseIdleConnections() {
+	if c, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		c.CloseIdleConnections()
+	}
 }
 
 // originOf returns u's scheme, lower-case host and port, with the scheme's
