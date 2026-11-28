@@ -1,7 +1,7 @@
 // Package storage is a client for the atomic-storage management API: the
 // JSON requests that create, read, update and delete workspaces, projects,
-// identities, organizations and the other management resources of a hosted
-// Atomic server.
+// identities, organizations, teams and the other management resources
+// of a hosted Atomic server.
 //
 // A [Client] sends every request to one base URL, which is an org base, the
 // apex or a project URL's origin; which one a request needs is the caller's
