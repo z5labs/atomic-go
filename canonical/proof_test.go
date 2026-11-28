@@ -209,6 +209,35 @@ func TestAttestReturnsTheSignerError(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestAttestAndSignRefuseANilSigner(t *testing.T) {
+	_, err := canonical.Attest(context.Background(), admit(t, goldenDocument), nil)
+	require.Error(t, err)
+	_, err = canonical.Sign(context.Background(), admit(t, goldenDocument), nil)
+	require.Error(t, err)
+}
+
+// shortSigner holds a real key and returns a signature that is not 64
+// bytes.
+type shortSigner struct {
+	key identity.PublicKey
+}
+
+func (s shortSigner) PublicKey() identity.PublicKey {
+	return s.key
+}
+
+func (shortSigner) Sign(context.Context, []byte) ([]byte, error) {
+	return make([]byte, identity.SignatureSize-1), nil
+}
+
+func TestAttestAndSignRefuseAShortSignature(t *testing.T) {
+	s := shortSigner{key: signerFromHex(t, seed1).PublicKey()}
+	_, err := canonical.Attest(context.Background(), admit(t, goldenDocument), s)
+	require.ErrorContains(t, err, "signature is 63 bytes")
+	_, err = canonical.Sign(context.Background(), admit(t, goldenDocument), s)
+	require.ErrorContains(t, err, "signature is 63 bytes")
+}
+
 func TestVerifyAttestedRefusesTampering(t *testing.T) {
 	d, s := attested(t, seed1)
 	for name, edit := range map[string]func(canonical.Document) (canonical.Document, error){
@@ -325,6 +354,27 @@ func TestVerifyAcceptsADIDKeyVerificationMethod(t *testing.T) {
 	did, err := p.Signer()
 	require.NoError(t, err)
 	require.Equal(t, s.PublicKey().KeyDID(), did)
+}
+
+func TestSignerReadsTheDIDBeforeTheFragment(t *testing.T) {
+	// Atomic reads the verification method's DID as the part before the
+	// first "#", whatever the fragment is, or with none at all.
+	d, s := attested(t, seed1)
+	did := s.PublicKey().AtomicDID().String()
+	for _, vm := range []string{did, did + "#key-2", did + "#"} {
+		named := withProofMember(t, d, "verificationMethod", vm)
+		require.NoError(t, canonical.VerifyAttested(named, s.PublicKey()), vm)
+
+		p, err := canonical.ProofOf(named)
+		require.NoError(t, err, vm)
+		got, err := p.Signer()
+		require.NoError(t, err, vm)
+		require.Equal(t, s.PublicKey().AtomicDID(), got, vm)
+	}
+
+	_, err := canonical.Proof{VerificationMethod: "#key-1"}.Signer()
+	require.ErrorIs(t, err, canonical.ErrProof)
+	require.ErrorIs(t, err, identity.ErrInvalidDID)
 }
 
 func TestVerifyRefusesAnotherKey(t *testing.T) {

@@ -247,7 +247,7 @@ func VerifyAttested(d Document, key identity.PublicKey) error {
 	}
 	got, err := ContentHash(d)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrContentHash, err)
 	}
 	if want != got {
 		return fmt.Errorf("%w: document carries %s, recomputes to %s", ErrContentHash, want, got)
@@ -285,7 +285,7 @@ func VerifyProof(d Document, key identity.PublicKey) error {
 	}
 	msg, err := d.Without(memberProof).Canonical()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", ErrProof, err)
 	}
 	if !key.Verify(msg, sig) {
 		return fmt.Errorf("%w: signature does not verify against %s", ErrProof, key)
