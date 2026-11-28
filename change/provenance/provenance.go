@@ -5,8 +5,10 @@
 // list of [Record]s.
 //
 // [DecodeAs] decodes a PROVENANCE payload in a named [Layout], and
-// [AppendPayload] writes one, in the current layout only, as Atomic's
-// writer does. The payload is documented in
+// [Decode] tries a list of layouts in order, as Atomic's readers do:
+// [FullReaderOrder] is the full change reader's and [SectionReaderOrder]
+// the section helper's. [AppendPayload] writes a payload, in the current
+// layout only, as Atomic's writer does. The payload is documented in
 // docs/remote/change-format/sections.md#provenance-section.
 package provenance
 
@@ -46,15 +48,23 @@ const (
 	LayoutCurrent Layout = iota
 
 	// LayoutBeforeXai is ProvenanceBeforeXai: the current fields, with the
-	// vendor numbered as it was before xAI was added.
+	// vendor numbered as it was before xAI was added, so that index 8 is
+	// [VendorLocal] and index 9 is [VendorOther]
+	// (docs/remote/change-format/sections.md#aivendorv0).
 	LayoutBeforeXai
 
-	// LayoutV0 is ProvenanceV0: the first 14 fields, with the pre-xAI
-	// vendor numbering and five token counters.
+	// LayoutV0 is ProvenanceV0: the first 14 fields, vendor through
+	// metadata, with the pre-xAI vendor numbering and five token counters.
+	// A record decoded in it has fields 15 to 21 nil and a
+	// [TokenUsage.Reasoning] of 0.
 	LayoutV0
 
-	// LayoutJuly2026 is July2026Provenance: a plain model version and two
-	// agent fields before the prompt.
+	// LayoutJuly2026 is July2026Provenance: the current vendor numbering,
+	// a model version that is a plain string rather than an option, and
+	// agent_name and agent_version fields between the suggestion type and
+	// the prompt. A record decoded in it has the model version set, and
+	// the two agent fields appended to its metadata under those keys,
+	// unless an identical pair is already there, as Atomic converts it.
 	LayoutJuly2026
 )
 
@@ -75,23 +85,28 @@ func (l Layout) String() string {
 }
 
 // DecodeAs decodes the PROVENANCE payload b, a list of records, in layout
-// l. Like postcard::from_bytes, which Atomic reads the section with, it
-// ignores bytes left over after the list
+// l, converting each record to the current [Record] as Atomic does. Like
+// postcard::from_bytes, which Atomic reads the section with, it ignores
+// bytes left over after the list
 // (docs/remote/change-format/sections.md#encoding-rules). An empty list
 // decodes to nil.
 //
-// Only [LayoutCurrent] is decoded so far; any other layout fails with an
-// error wrapping [ErrUnsupportedLayout]. A payload that does not decode
-// fails with an error wrapping both [ErrMalformed] and the postcard
-// failure: a vendor, tool, suggestion type or prompt variant index Atomic
-// does not declare is an unknown variant, an option tag other than 0 or 1
-// a bad option, and a string that is not UTF-8 invalid UTF-8.
+// A layout other than the four this package names fails with an error
+// wrapping [ErrUnsupportedLayout]. A payload that does not decode fails
+// with an error wrapping both [ErrMalformed] and the postcard failure: a
+// vendor, tool, suggestion type or prompt variant index the layout does
+// not declare is an unknown variant, an option tag other than 0 or 1 a bad
+// option, and a string that is not UTF-8 invalid UTF-8.
+//
+// Postcard writes no type tags, so a payload can decode in a layout it was
+// not written in; see [Decode].
 func DecodeAs(b []byte, l Layout) ([]Record, error) {
-	if l != LayoutCurrent {
+	decode, ok := recordDecoder(l)
+	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedLayout, l)
 	}
 	records, err := postcard.Decode(b, func(d *postcard.Decoder) []Record {
-		return postcard.Seq(d, decodeRecord)
+		return postcard.Seq(d, decode)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s layout: %w", ErrMalformed, l, err)
@@ -100,6 +115,23 @@ func DecodeAs(b []byte, l Layout) ([]Record, error) {
 		return nil, nil
 	}
 	return records, nil
+}
+
+// recordDecoder returns the function that decodes one record in layout l,
+// and false for a layout this package does not name.
+func recordDecoder(l Layout) (func(*postcard.Decoder) Record, bool) {
+	switch l {
+	case LayoutCurrent:
+		return decodeRecord, true
+	case LayoutBeforeXai:
+		return decodeRecordBeforeXai, true
+	case LayoutV0:
+		return decodeRecordV0, true
+	case LayoutJuly2026:
+		return decodeRecordJuly2026, true
+	default:
+		return nil, false
+	}
 }
 
 // AppendPayload appends the PROVENANCE payload of records to dst, in the
@@ -208,19 +240,33 @@ func (p Prompt) check() error {
 // decodeRecord decodes one record in the current layout
 // (docs/remote/change-format/sections.md#provenance).
 func decodeRecord(d *postcard.Decoder) Record {
-	r := Record{
-		Vendor:         decodeVendor(d),
+	r := decodeHead(d, decodeVendor)
+	decodeBody(d, &r, decodeTokens)
+	decodeAgentFields(d, &r)
+	return r
+}
+
+// decodeHead decodes the fields from vendor to suggestion_type in every
+// layout but July 2026's, reading the vendor with vendor.
+func decodeHead(d *postcard.Decoder, vendor func(*postcard.Decoder) Vendor) Record {
+	return Record{
+		Vendor:         vendor(d),
 		Model:          d.Str(),
 		ModelVersion:   postcard.Option(d, (*postcard.Decoder).Str),
 		Tool:           decodeTool(d),
 		SuggestionType: SuggestionType(d.Variant(suggestionVariants)),
-		Prompt:         decodePrompt(d),
 	}
+}
+
+// decodeBody decodes the fields from prompt to metadata into r, fields 6
+// to 14 of the current layout, reading the token counts with tokens.
+func decodeBody(d *postcard.Decoder, r *Record, tokens func(*postcard.Decoder) TokenUsage) {
+	r.Prompt = decodePrompt(d)
 	if h := postcard.Option(d, (*postcard.Decoder).Array32); h != nil {
 		hash := ident.Hash(*h)
 		r.SystemPromptHash = &hash
 	}
-	r.Tokens = decodeTokens(d)
+	r.Tokens = tokens(d)
 	r.Cost = Cost{USD: d.F64(), MicroUSD: d.U64()}
 	r.Temperature = postcard.Option(d, (*postcard.Decoder).U32)
 	r.Timestamp = postcard.Option(d, (*postcard.Decoder).I64)
@@ -229,6 +275,11 @@ func decodeRecord(d *postcard.Decoder) Record {
 	if m := postcard.Seq(d, decodePair); len(m) > 0 {
 		r.Metadata = m
 	}
+}
+
+// decodeAgentFields decodes the fields from agent_mode to task_plan into
+// r, fields 15 to 21 of the current layout.
+func decodeAgentFields(d *postcard.Decoder, r *Record) {
 	r.AgentMode = postcard.Option(d, (*postcard.Decoder).Str)
 	r.FinishReason = postcard.Option(d, (*postcard.Decoder).Str)
 	r.StepCount = postcard.Option(d, (*postcard.Decoder).U32)
@@ -236,7 +287,6 @@ func decodeRecord(d *postcard.Decoder) Record {
 	r.ReasoningSignature = postcard.Option(d, (*postcard.Decoder).Str)
 	r.ReasoningText = postcard.Option(d, (*postcard.Decoder).Str)
 	r.TaskPlan = postcard.Option(d, (*postcard.Decoder).Str)
-	return r
 }
 
 // putRecord writes one record in the current layout.
