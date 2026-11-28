@@ -145,16 +145,19 @@ func TestDecodeRefuses(t *testing.T) {
 		name    string
 		payload []byte
 		want    []error
+		msg     string
 	}{
 		{
 			name:    "an overlong prior metadata length",
 			payload: []byte{0x41, 0x54, 0x53, 0x50, 0x02, 0x80, 0x00, 0x00, 0x00},
 			want:    []error{ErrNotCanonical},
+			msg:     "re-encodes to different bytes",
 		},
 		{
 			name:    "an overlong authored_id",
 			payload: cat([]byte{0x41, 0x54, 0x53, 0x50, 0x02, 0x00, 0x00, 0x01, 0xac, 0x82, 0x00}, bytes.Repeat([]byte{0xa5}, 32)),
 			want:    []error{ErrNotCanonical},
+			msg:     "re-encodes to different bytes",
 		},
 		{
 			name:    "a trailing byte after a V2 patch",
@@ -217,6 +220,9 @@ func TestDecodeRefuses(t *testing.T) {
 			got, err := Decode(tc.payload)
 			for _, want := range tc.want {
 				require.ErrorIs(t, err, want)
+			}
+			if tc.msg != "" {
+				require.ErrorContains(t, err, tc.msg)
 			}
 			require.Zero(t, got)
 		})
@@ -309,6 +315,8 @@ func TestValidateContentRanges(t *testing.T) {
 		{name: "reversed insert", ops: []Op{edit(func(e *Edit) { e.InsertStart, e.InsertEnd = 3, 2 })}, want: ErrInvalidOp},
 		{name: "insert past the content", ops: []Op{edit(func(e *Edit) { e.InsertEnd = 11 })}, want: ErrInvalidOp},
 		{name: "nil op", ops: []Op{nil}, want: ErrInvalidOp},
+		{name: "foreign op", ops: []Op{otherOp{}}, want: ErrInvalidOp, msg: "span.otherOp, not a span.Root or span.Edit"},
+		{name: "*Root op", ops: []Op{&Root{}}, want: ErrInvalidOp},
 		{name: "authored_id 0", owners: []SemanticOwner{owner(0, 1)}, want: ErrInvalidOwners},
 		{name: "zero owner hash", owners: []SemanticOwner{{AuthoredID: 1}}, want: ErrInvalidOwners},
 		{name: "unsorted authored_ids", owners: []SemanticOwner{owner(2, 1), owner(1, 2)}, want: ErrInvalidOwners},
@@ -330,6 +338,13 @@ func TestValidateContentRanges(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestProjectionID(t *testing.T) {
+	require.True(t, ProjectionID{}.IsZero())
+	id := ProjectionID(filled(0x5a))
+	require.False(t, id.IsZero())
+	require.Equal(t, filled(0x5a).String(), id.String())
 }
 
 func TestVersionString(t *testing.T) {

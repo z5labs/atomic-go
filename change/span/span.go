@@ -42,7 +42,8 @@ var (
 	// ErrInvalidOp is wrapped by the error [Patch.ValidateContentRanges]
 	// returns for an operation whose ranges are invalid, and by the error
 	// [AppendPayload] returns for an operation it cannot write. The error
-	// reads "invalid span operation N: reason", as Atomic's does.
+	// reads "span: invalid span operation N: reason", which contains
+	// Atomic's "invalid span operation N: reason".
 	ErrInvalidOp = errors.New("span: invalid span operation")
 
 	// ErrInvalidOwners is wrapped by the error
@@ -179,6 +180,16 @@ type ExternalFile struct {
 // Atomic's SpanProjectionId. On the wire it is the hash's 32 raw bytes
 // (docs/remote/change-format/graph.md#spanprojectionid).
 type ProjectionID ident.Hash
+
+// IsZero reports whether id is the all-zero hash.
+func (id ProjectionID) IsZero() bool {
+	return ident.Hash(id).IsZero()
+}
+
+// String returns the base32 text of the hash.
+func (id ProjectionID) String() string {
+	return ident.Hash(id).String()
+}
 
 // SemanticOwner names the change that introduced the items a semantic ID
 // refers to.
