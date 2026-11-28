@@ -40,15 +40,24 @@ const (
 	MaxHashTableEntries = 1<<16 - 2
 )
 
-// Decompressor decompresses one section payload. dst is a buffer the result
-// may be appended to; src is the payload's compressed bytes. A
-// *zstdframe.Decoder is one.
+// Decompressor decompresses one section payload: it appends the
+// decompressed bytes of src, every zstd frame in it concatenated, to dst and
+// returns the extended slice, leaving dst's existing bytes as they are.
+//
+// A change file is untrusted input, and a few bytes of payload can claim
+// gigabytes of output, so an implementation must bound what one call
+// produces and fail past its bound. The bound is the implementation's,
+// set when it is built: a *zstdframe.Decoder is one, with the limit given
+// to zstdframe.NewDecoder.
 type Decompressor interface {
 	Decompress(dst, src []byte) ([]byte, error)
 }
 
 // Compressor compresses one section payload, appending the compressed bytes
 // of src to dst. A *zstdframe.Encoder and zstdframe.Stored are both one.
+//
+// Compressing a byte slice in memory cannot fail, so Compress returns no
+// error; see [ErrCompress].
 type Compressor interface {
 	Compress(dst, src []byte) []byte
 }
@@ -84,7 +93,10 @@ var (
 	// ErrDecompress reports a section payload that would not decompress.
 	ErrDecompress = errors.New("decompression error")
 
-	// ErrCompress reports a section payload that would not compress.
+	// ErrCompress reports a section payload that would not compress. It
+	// mirrors Atomic's FormatError::Compress. A [Compressor] cannot fail, so
+	// nothing compressing through one reports it; it is there for code that
+	// compresses some other way.
 	ErrCompress = errors.New("compression error")
 
 	// ErrHashMismatch reports a trailer that is not the change hash of the
@@ -142,7 +154,9 @@ type FormatError struct {
 	Section SectionType
 
 	// Offset is the byte offset in the file where the failure was found,
-	// or -1 when it has none, as for a hash table lookup.
+	// or -1 when it has none, as for a hash table lookup. 0 is a real
+	// offset, the magic, so a FormatError built by hand for a failure with
+	// no offset must set -1.
 	Offset int64
 
 	// Detail says what was wrong, or is "".

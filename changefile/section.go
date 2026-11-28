@@ -101,7 +101,9 @@ func (t SectionType) Order() int {
 }
 
 // FrameSize returns the size of the frame before a section of type t:
-// [ChunkFrameSize] for CONTENT, otherwise [FrameSize].
+// [ChunkFrameSize] for CONTENT, otherwise [FrameSize]. For a type that is
+// not [SectionType.Known] the result means nothing: no frame length is
+// defined for it, and a section of that type cannot be skipped.
 func (t SectionType) FrameSize() int {
 	if t == SectionContent {
 		return ChunkFrameSize

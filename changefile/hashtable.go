@@ -113,7 +113,8 @@ func (t HashTable) AppendBinary(b []byte) ([]byte, error) {
 // TableBuilder builds the [HashTable] of a change being written. Slot 0
 // holds the zero hash, as in every file Atomic writes, and each hash added
 // takes the next slot the first time it is added. The zero value is ready
-// to use.
+// to use. A TableBuilder must not be copied after its first use: a copy
+// shares its state, and adding to both corrupts both. Pass a *TableBuilder.
 type TableBuilder struct {
 	entries []ident.Hash
 	index   map[ident.Hash]HashIndex
