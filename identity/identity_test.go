@@ -352,6 +352,30 @@ func TestParseDIDRefuses(t *testing.T) {
 	}
 }
 
+func TestParseDIDTruncatedIsNotAnotherKeyType(t *testing.T) {
+	for _, raw := range [][]byte{{}, {0xed}} {
+		_, err := identity.ParseDID(keyDIDOf(raw))
+		require.ErrorIs(t, err, identity.ErrInvalidDID)
+		require.NotErrorIs(t, err, identity.ErrNotEd25519)
+	}
+}
+
+func TestParseDIDErrorIsBounded(t *testing.T) {
+	for _, s := range []string{
+		"did:key:z" + strings.Repeat("2", 10000),
+		"did:web:" + strings.Repeat("x", 10000),
+		"did:key:z" + strings.Repeat("2", 10000) + "#key-2",
+	} {
+		_, err := identity.ParseDID(s)
+		require.Error(t, err)
+		require.Less(t, len(err.Error()), 300)
+
+		_, err = identity.ParseVerificationMethod(s)
+		require.Error(t, err)
+		require.Less(t, len(err.Error()), 300)
+	}
+}
+
 func TestParseVerificationMethodRefuses(t *testing.T) {
 	good := vectors[0].atomicDID
 	for name, s := range map[string]string{
@@ -397,6 +421,15 @@ func TestType(t *testing.T) {
 			require.Equal(t, identity.TypeAgent, ty)
 		})
 	}
+
+	t.Run("marshalling refuses an unknown type", func(t *testing.T) {
+		for _, ty := range []identity.Type{"", "admin", "User"} {
+			_, err := ty.MarshalText()
+			require.Error(t, err)
+			_, err = json.Marshal(ty)
+			require.Error(t, err)
+		}
+	})
 
 	t.Run("json refuses an unknown type", func(t *testing.T) {
 		var v struct {

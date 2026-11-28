@@ -2,6 +2,7 @@ package identity
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/z5labs/atomic-go/ident"
@@ -39,6 +40,19 @@ const (
 	maxKeyDIDBase58 = 64
 )
 
+// maxQuoted bounds how much of an input an error message quotes, so an
+// enormous untrusted input does not make an enormous error.
+const maxQuoted = 80
+
+// quote returns s quoted for an error message, cut to its first maxQuoted
+// bytes.
+func quote(s string) string {
+	if len(s) <= maxQuoted {
+		return strconv.Quote(s)
+	}
+	return strconv.Quote(s[:maxQuoted]) + fmt.Sprintf("... (%d bytes)", len(s))
+}
+
 // ed25519Multicodec is the unsigned-varint multicodec code of ed25519-pub,
 // 0xed, which prefixes the key bytes in a did:key.
 var ed25519Multicodec = [2]byte{0xed, 0x01}
@@ -57,6 +71,10 @@ var ed25519Multicodec = [2]byte{0xed, 0x01}
 // DIDs are comparable. Two DIDs are equal when they have the same method
 // and name the same identity, so a did:atomic never equals the did:key of
 // the same key; use [DID.Matches] to check a DID against a key.
+//
+// Because the zero DID has no text, marshalling a struct whose DID field is
+// unset fails. Tag an optional DID field `json:",omitzero"`, which
+// [DID.IsZero] makes work.
 type DID struct {
 	method DIDMethod
 	id     ID
@@ -77,17 +95,17 @@ func ParseDID(s string) (DID, error) {
 	case strings.HasPrefix(s, atomicPrefix):
 		b, err := ident.DecodeBase32Strict(s[len(atomicPrefix):], ident.Size)
 		if err != nil {
-			return DID{}, fmt.Errorf("%w %q: %w", ErrInvalidDID, s, err)
+			return DID{}, fmt.Errorf("%w %s: %w", ErrInvalidDID, quote(s), err)
 		}
 		return ID(b).DID(), nil
 	case strings.HasPrefix(s, keyPrefix):
 		k, err := parseKeyDID(s[len(keyPrefix):])
 		if err != nil {
-			return DID{}, fmt.Errorf("%w %q: %w", ErrInvalidDID, s, err)
+			return DID{}, fmt.Errorf("%w %s: %w", ErrInvalidDID, quote(s), err)
 		}
 		return k.KeyDID(), nil
 	}
-	return DID{}, fmt.Errorf("%w %q: not did:atomic or did:key", ErrInvalidDID, s)
+	return DID{}, fmt.Errorf("%w %s: not did:atomic or did:key", ErrInvalidDID, quote(s))
 }
 
 // parseKeyDID decodes the method-specific part of a did:key.
@@ -103,7 +121,10 @@ func parseKeyDID(s string) (PublicKey, error) {
 	if err != nil {
 		return PublicKey{}, err
 	}
-	if len(b) < len(ed25519Multicodec) || [2]byte(b) != ed25519Multicodec {
+	if len(b) < len(ed25519Multicodec) {
+		return PublicKey{}, fmt.Errorf("%d bytes is too short for a multicodec prefix", len(b))
+	}
+	if [2]byte(b) != ed25519Multicodec {
 		return PublicKey{}, fmt.Errorf("multicodec prefix is not ed25519-pub: %w", ErrNotEd25519)
 	}
 	b = b[len(ed25519Multicodec):]
@@ -119,7 +140,7 @@ func parseKeyDID(s string) (PublicKey, error) {
 func ParseVerificationMethod(s string) (DID, error) {
 	did, ok := strings.CutSuffix(s, verificationSuffix)
 	if !ok {
-		return DID{}, fmt.Errorf("%w: verification method %q does not end %q", ErrInvalidDID, s, verificationSuffix)
+		return DID{}, fmt.Errorf("%w: verification method %s does not end %q", ErrInvalidDID, quote(s), verificationSuffix)
 	}
 	return ParseDID(did)
 }

@@ -58,7 +58,9 @@ var (
 type Type string
 
 const (
-	// TypeUser is a human. It is the default type.
+	// TypeUser is a human. Atomic creates a user identity unless told
+	// otherwise, but the zero Type is "", which is not valid; nothing here
+	// fills in TypeUser for it.
 	TypeUser Type = "user"
 
 	// TypeAgent is an AI or automated system that signs as itself, like a
@@ -74,6 +76,17 @@ const (
 // changes what a client sends.
 func (t Type) IsDelegated() bool {
 	return t == TypeDelegated
+}
+
+// MarshalText returns t's text. It implements [encoding.TextMarshaler], and
+// refuses anything but the three constants, including "", so a Type that
+// marshals always unmarshals again.
+func (t Type) MarshalText() ([]byte, error) {
+	switch t {
+	case TypeUser, TypeAgent, TypeDelegated:
+		return []byte(t), nil
+	}
+	return nil, fmt.Errorf("identity: unknown identity type %q", string(t))
 }
 
 // UnmarshalText sets t from "user", "agent" or "delegated", exactly as

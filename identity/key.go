@@ -5,8 +5,6 @@ import (
 	"crypto/ed25519"
 	"fmt"
 
-	"lukechampine.com/blake3"
-
 	"github.com/z5labs/atomic-go/ident"
 )
 
@@ -87,7 +85,7 @@ func (k PublicKey) Verify(msg, sig []byte) bool {
 
 // ID returns k's identity id, the BLAKE3 hash of its 32 bytes.
 func (k PublicKey) ID() ID {
-	return ID(blake3.Sum256(k[:]))
+	return ID(ident.Sum(k[:]))
 }
 
 // AtomicDID returns k's did:atomic DID, which names k by its [ID] and so
